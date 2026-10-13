@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>DDD في Laravel 13: شرح خطوة بخطوة مع مثال كامل</title>
+<style>
+:root{--bg:#fafaf8;--fg:#1c1c1a;--mut:#60605a;--card:#fff;--bd:#e3e3dc;--ac:#c2410c;--code:#16161d;--cf:#e6e6ee;--ok:#15803d;--bad:#b91c1c;
+--k:#ff7b72;--s:#a5d6a7;--c:#7d8590;--v:#79c0ff;--a:#d2a8ff;--t:#ffd479}
+@media (prefers-color-scheme:dark){:root{--bg:#121214;--fg:#ececea;--mut:#a0a09a;--card:#1b1b1e;--bd:#2c2c30;--ac:#fb923c;--ok:#4ade80;--bad:#f87171}}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.9 "Segoe UI",Tahoma,system-ui,sans-serif}
+main{max-width:820px;margin:0 auto;padding:20px 16px 70px}
+h1{font-size:1.65rem;line-height:1.4}
+h2{font-size:1.25rem;margin:2.4em 0 .4em;padding-bottom:.3em;border-bottom:2px solid var(--ac)}
+h3{font-size:1.02rem;margin:1.8em 0 .2em;color:var(--ac)}
+.mut{color:var(--mut)}.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:10px 16px;margin:14px 0}
+.why{border-inline-start:4px solid var(--ac)}.good{border-inline-start:4px solid var(--ok)}.bad{border-inline-start:4px solid var(--bad)}
+pre{direction:ltr;text-align:left;background:var(--code);color:var(--cf);border-radius:10px;padding:14px;overflow-x:auto;font:13px/1.65 ui-monospace,Menlo,Consolas,monospace;margin:10px 0}
+code{font-family:ui-monospace,Menlo,Consolas,monospace;direction:ltr;unicode-bidi:isolate;font-size:.9em}
+p code,li code,td code{background:var(--card);border:1px solid var(--bd);padding:1px 5px;border-radius:5px}
+.k{color:var(--k)}.s{color:var(--s)}.c{color:var(--c);font-style:italic}.v{color:var(--v)}.a{color:var(--a)}.t{color:var(--t)}
+.tbl{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:.92rem}
+th,td{border:1px solid var(--bd);padding:8px 10px;text-align:right;vertical-align:top}th{background:var(--card)}
+.file{direction:ltr;text-align:left;font:12px ui-monospace,Menlo,monospace;color:var(--ac);margin:14px 0 -6px}
+</style>
+</head>
+<body>
+<main>
+<h1>DDD في Laravel 13: شرح خطوة بخطوة مع مثال كامل</h1>
+<p class="mut">نبني مثال حقيقي: <b>نظام قبول جامعي مبسّط</b>. الطالب يقدّم على برنامج دراسي، والجامعة تقبل أو ترفض، والمقاعد محدودة، وبعد القبول يوصله إشعار. كل خطوة: الفكرة بكلام بسيط، ثم لماذا، ثم الكود. (الكود نموذج توضيحي، جرّبه في مشروعك قبل الاعتماد.)</p>
+
+<h2>الخطوة ٠: لماذا نحتاج DDD أصلاً؟ (المشكلة)</h2>
+<p>الطريقة التقليدية: كل المنطق داخل الـ Controller. ينفع في البداية، لكن بعد شهور القواعد تتوزع وتتكرر ويصير تعديل قاعدة واحدة مخاطرة.</p>
+<pre><code class="php">// ❌ الطريقة التقليدية: القواعد مبعثرة داخل الـ Controller
+public function accept($id)
+{
+    $app = Application::find($id);
+    if ($app-&gt;status !== 'submitted') abort(422);
+    $program = Program::find($app-&gt;program_id);
+    if ($program-&gt;seats &lt; 1) abort(422);
+    $program-&gt;seats--; $program-&gt;save();
+    $app-&gt;status = 'accepted'; $app-&gt;save();
+    Mail::to($app-&gt;student-&gt;email)-&gt;send(new Accepted());
+}</code></pre>
+<div class="card bad"><p>المشاكل: لو أردت قبول الطلب من Command أو API ثاني، تنسخ القواعد. وأي مبرمج ممكن يكتب <code>$app-&gt;status = 'accepted'</code> مباشرة ويتجاوز كل الشروط.</p></div>
+<p>هدف DDD: <b>القواعد تعيش في مكان واحد (داخل المجال) ولا أحد يتجاوزها.</b></p>
+
+<h2>الخطوة ١: اللغة المشتركة (Ubiquitous Language)</h2>
+<p>قبل أي كود، اكتب المصطلحات مع تعريفها بالضبط. هذي الكلمات ستصير أسماء الكلاسات والدوال.</p>
+<div class="tbl"><table>
+<tr><th>المصطلح</th><th>التعريف</th></tr>
+<tr><td>Application (طلب قبول)</td><td>طلب طالب للالتحاق ببرنامج. حالاته: مسودة، مُقدَّم، مقبول، مرفوض</td></tr>
+<tr><td>Program (برنامج)</td><td>تخصص له حد أدنى للمعدل وعدد مقاعد</td></tr>
+<tr><td>Submit (تقديم)</td><td>الانتقال من مسودة إلى مُقدَّم، بشرط أن المعدل يحقق الحد الأدنى</td></tr>
+<tr><td>Accept (قبول)</td><td>قبول طلب مُقدَّم، ويحجز مقعداً. لا يصح لو المقاعد انتهت</td></tr>
+</table></div>
+<div class="card why"><p><b>لماذا؟</b> لما تكتب <code>$application-&gt;accept()</code> يفهمها المبرمج وخبير الجامعة بنفس المعنى. هذا أهم جزء في DDD وأرخصه.</p></div>
+
+<h2>الخطوة ٢: تحديد السياقات (Bounded Contexts)</h2>
+<p>نقسم النظام لأجزاء، كل جزء له مصطلحاته وقواعده:</p>
+<ul>
+<li><b>Admissions:</b> الطلبات والبرامج والمقاعد. هذا هو <b>Core Domain</b> (قلب النظام).</li>
+<li><b>Notifications:</b> إرسال الإشعارات. جزء عام (Generic).</li>
+</ul>
+<div class="card why"><p><b>القاعدة:</b> Admissions لا يعرف شيئاً عن Notifications. هو فقط يعلن «حصل شي» (Event)، ومن يهمه الأمر يستمع.</p></div>
+
+<h2>الخطوة ٣: هيكل المجلدات</h2>
+<p>نبقي <code>app/</code> لطبقة الويب (Controllers/Requests)، ونضيف <code>src/Domain</code> للمجال.</p>
+<pre><code class="txt">app/Http/Controllers/ApplicationController.php   # الويب فقط
+app/Http/Requests/SubmitApplicationRequest.php
+src/Domain/
+  Admissions/
+    Actions/              # SubmitApplicationAction, AcceptApplicationAction
+    DataTransferObjects/  # SubmitApplicationData
+    Enums/                # ApplicationStatus
+    Events/               # ApplicationSubmitted, ApplicationAccepted
+    Exceptions/           # InvalidTransition, GpaBelowMinimum, NoSeatsAvailable
+    Models/               # AdmissionApplication, Program
+    ValueObjects/         # Gpa
+  Notifications/
+    Listeners/            # NotifyStudentOfAcceptance</code></pre>
+<div class="file">composer.json</div>
+<pre><code class="json">"autoload": { "psr-4": { "App\\": "app/", "Domain\\": "src/Domain/" } }</code></pre>
+<p>ثم شغّل <code>composer dump-autoload</code>.</p>
+
+<h2>الخطوة ٤: قاعدة البيانات (عادية جداً)</h2>
+<p>DDD لا يغيّر الـ Migrations. الجداول عادية، والفرق في كيف نتعامل معها.</p>
+<div class="file">database/migrations/xxxx_create_admissions_tables.php</div>
+<pre><code class="php">Schema::create('programs', function (Blueprint $t) {
+    $t-&gt;id();
+    $t-&gt;string('name');
+    $t-&gt;decimal('min_gpa', 3, 2);
+    $t-&gt;unsignedInteger('seats');
+    $t-&gt;timestamps();
+});
+
+Schema::create('admission_applications', function (Blueprint $t) {
+    $t-&gt;id();
+    $t-&gt;foreignId('student_id')-&gt;constrained('users');
+    $t-&gt;foreignId('program_id')-&gt;constrained();
+    $t-&gt;decimal('gpa', 3, 2);
+    $t-&gt;string('status')-&gt;default('draft');
+    $t-&gt;timestamps();
+});</code></pre>
+
+<h2>الخطوة ٥: Value Object (المعدل Gpa)</h2>
+<p><b>الفكرة:</b> بدل ما المعدل رقم عادي (ممكن يكون 9 أو -3!)، نسوّي له كلاس يرفض القيم الخاطئة. وهو <b>غير قابل للتغيير</b> (readonly): تنشئه مرة وما يتبدل.</p>
+<div class="card why"><p><b>لماذا؟</b> أي مكان في النظام يستقبل <code>Gpa</code> يضمن أنه صحيح بدون إعادة التحقق.</p></div>
+<div class="file">src/Domain/Admissions/ValueObjects/Gpa.php</div>
+<pre><code class="php">&lt;?php
+namespace Domain\Admissions\ValueObjects;
+
+use InvalidArgumentException;
+
+final readonly class Gpa
+{
+    public function __construct(public float $value)
+    {
+        if ($value &lt; 0 || $value &gt; 5) {
+            throw new InvalidArgumentException("GPA must be between 0 and 5, got {$value}");
+        }
+    }
+
+    public function meets(self $minimum): bool
+    {
+        return $this-&gt;value &gt;= $minimum-&gt;value;
+    }
+}</code></pre>
+
+<h2>الخطوة ٦: Enum للحالات + الانتقالات المسموحة</h2>
+<p><b>الفكرة:</b> الحالات محصورة (ما يصير status = «abc»)، والـ Enum نفسه يعرف أي انتقال مسموح.</p>
+<div class="file">src/Domain/Admissions/Enums/ApplicationStatus.php</div>
+<pre><code class="php">&lt;?php
+namespace Domain\Admissions\Enums;
+
+enum ApplicationStatus: string
+{
+    case Draft = 'draft';
+    case Submitted = 'submitted';
+    case Accepted = 'accepted';
+    case Rejected = 'rejected';
+
+    public function canTransitionTo(self $next): bool
+    {
+        return match ($this) {
+            self::Draft     =&gt; $next === self::Submitted,
+            self::Submitted =&gt; in_array($next, [self::Accepted, self::Rejected], true),
+            default         =&gt; false, // مقبول/مرفوض: حالة نهائية
+        };
+    }
+}</code></pre>
+
+<h2>الخطوة ٧: استثناءات المجال (Domain Exceptions)</h2>
+<p><b>الفكرة:</b> لما قاعدة تنكسر نرمي استثناء بإسم يشرح السبب بلغة العمل، بدل <code>abort(422)</code> مجهول.</p>
+<div class="file">src/Domain/Admissions/Exceptions/*.php (كل كلاس في ملف)</div>
+<pre><code class="php">&lt;?php
+namespace Domain\Admissions\Exceptions;
+
+use Domain\Admissions\Enums\ApplicationStatus;
+use Domain\Admissions\Models\Program;
+use DomainException;
+
+final class InvalidTransition extends DomainException
+{
+    public static function from(ApplicationStatus $from, ApplicationStatus $to): self
+    {
+        return new self("Cannot move application from {$from-&gt;value} to {$to-&gt;value}");
+    }
+}
+
+final class GpaBelowMinimum extends DomainException
+{
+    public static function for(Program $program): self
+    {
+        return new self("GPA is below the minimum required for {$program-&gt;name}");
+    }
+}
+
+final class NoSeatsAvailable extends DomainException
+{
+    public static function for(Program $program): self
+    {
+        return new self("No seats left in {$program-&gt;name}");
+    }
+}</code></pre>
+
+<h2>الخطوة ٨: الكيانات (Entities) بالسلوك</h2>
+<p><b>الفكرة:</b> الموديل ما يكون مجرد حاوية بيانات. فيه <b>دوال تعبّر عن أفعال العمل</b> (<code>submit</code>, <code>accept</code>) وتحمي القواعد. هذا يمنع النموذج الفقير (Anemic Model).</p>
+<h3>Program: يحمي قاعدة المقاعد</h3>
+<div class="file">src/Domain/Admissions/Models/Program.php</div>
+<pre><code class="php">&lt;?php
+namespace Domain\Admissions\Models;
+
+use Domain\Admissions\Exceptions\NoSeatsAvailable;
+use Domain\Admissions\ValueObjects\Gpa;
+use Illuminate\Database\Eloquent\Model;
+
+class Program extends Model
+{
+    protected $guarded = [];
+
+    protected function casts(): array
+    {
+        return ['min_gpa' =&gt; 'float'];
+    }
+
+    public function minGpa(): Gpa
+    {
+        return new Gpa($this-&gt;min_gpa);
+    }
+
+    public function reserveSeat(): void
+    {
+        if ($this-&gt;seats &lt; 1) {
+            throw NoSeatsAvailable::for($this);
+        }
+        $this-&gt;decrement('seats');
+    }
+}</code></pre>
+<h3>AdmissionApplication: الـ Aggregate Root</h3>
+<p>هذا «الجذر»: كل تغيير على حالة الطلب يمر من خلاله فقط. لاحظ أن الحالة تتغير داخل دالة خاصة <code>transitionTo</code> تتحقق من القاعدة.</p>
+<div class="file">src/Domain/Admissions/Models/AdmissionApplication.php</div>
+<pre><code class="php">&lt;?php
+namespace Domain\Admissions\Models;
+
+use Domain\Admissions\Enums\ApplicationStatus;
+use Domain\Admissions\Events\ApplicationAccepted;
+use Domain\Admissions\Events\ApplicationSubmitted;
+use Domain\Admissions\Exceptions\GpaBelowMinimum;
+use Domain\Admissions\Exceptions\InvalidTransition;
+use Domain\Admissions\ValueObjects\Gpa;
+use Illuminate\Database\Eloquent\Model;
+
+class AdmissionApplication extends Model
+{
+    protected $guarded = [];
+
+    protected function casts(): array
+    {
+        return ['status' =&gt; ApplicationStatus::class];
+    }
+
+    public function gpa(): Gpa
+    {
+        return new Gpa((float) $this-&gt;attributes['gpa']);
+    }
+
+    /** تقديم الطلب: يتحقق من المعدل ثم ينقل الحالة */
+    public function submit(Program $program): void
+    {
+        if (! $this-&gt;gpa()-&gt;meets($program-&gt;minGpa())) {
+            throw GpaBelowMinimum::for($program);
+        }
+
+        $this-&gt;transitionTo(ApplicationStatus::Submitted);
+        $this-&gt;save();
+
+        ApplicationSubmitted::dispatch($this);
+    }
+
+    public function accept(): void
+    {
+        $this-&gt;transitionTo(ApplicationStatus::Accepted);
+        $this-&gt;save();
+
+        ApplicationAccepted::dispatch($this);
+    }
+
+    public function reject(): void
+    {
+        $this-&gt;transitionTo(ApplicationStatus::Rejected);
+        $this-&gt;save();
+    }
+
+    private function transitionTo(ApplicationStatus $next): void
+    {
+        if (! $this-&gt;status-&gt;canTransitionTo($next)) {
+            throw InvalidTransition::from($this-&gt;status, $next);
+        }
+        $this-&gt;status = $next;
+    }
+}</code></pre>
+<div class="card why"><p><b>ملاحظة صادقة:</b> Eloquent لا يمنع أحداً من كتابة <code>$app-&gt;status = ...</code> من الخارج. DDD في لارافل اتفاق فريق (Convention) أكثر منه منع تقني. وللتشديد ممكن تخلّي <code>status</code> خارج <code>$fillable</code> وتراجع الكود في المراجعات.</p></div>
+
+<h2>الخطوة ٩: الأحداث (Domain Events)</h2>
+<p><b>الفكرة:</b> الحدث يعلن شي «حصل» (بصيغة الماضي). هو الجسر بين السياقات. أضفنا <code>ShouldDispatchAfterCommit</code> حتى لا يُرسل الحدث إلا بعد نجاح الـ Transaction (لو فشلت العملية ما يوصل إشعار كاذب).</p>
+<div class="file">src/Domain/Admissions/Events/ApplicationAccepted.php</div>
+<pre><code class="php">&lt;?php
+namespace Domain\Admissions\Events;
+
+use Domain\Admissions\Models\AdmissionApplication;
+use Illuminate\Contracts\Events\ShouldDispatchAfterCommit;
+use Illuminate\Foundation\Events\Dispatchable;
+
+final class ApplicationAccepted implements ShouldDispatchAfterCommit
+{
+    use Dispatchable;
+
+    public function __construct(public readonly AdmissionApplication $application) {}
+}
+// ApplicationSubmitted بنفس الشكل</code></pre>
+
+<h2>الخطوة ١٠: DTO (نقل البيانات)</h2>
+<p><b>الفكرة:</b> بدل تمرير <code>Request</code> أو مصفوفة غامضة للمجال، نمرر كائناً واضحاً بأنواع محددة. المجال ما يعرف شي عن HTTP.</p>
+<div class="file">src/Domain/Admissions/DataTransferObjects/SubmitApplicationData.php</div>
+<pre><code class="php">&lt;?php
+namespace Domain\Admissions\DataTransferObjects;
+
+final readonly class SubmitApplicationData
+{
+    public function __construct(
+        public int $studentId,
+        public int $programId,
+        public float $gpa,
+    ) {}
+}</code></pre>
+
+<h2>الخطوة ١١: Actions (حالات الاستخدام)</h2>
+<p><b>الفكرة:</b> كل Action = <b>سيناريو عمل واحد</b>. وظيفته التنسيق: يجلب الكائنات، يفتح Transaction، وينادي دوال المجال. المنطق نفسه (القواعد) يبقى في الموديل.</p>
+<h3>تقديم طلب</h3>
+<div class="file">src/Domain/Admissions/Actions/SubmitApplicationAction.php</div>
+<pre><code class="php">&lt;?php
+namespace Domain\Admissions\Actions;
+
+use Domain\Admissions\DataTransferObjects\SubmitApplicationData;
+use Domain\Admissions\Enums\ApplicationStatus;
+use Domain\Admissions\Models\AdmissionApplication;
+use Domain\Admissions\Models\Program;
+use Domain\Admissions\ValueObjects\Gpa;
+use Illuminate\Support\Facades\DB;
+
+final class SubmitApplicationAction
+{
+    public function execute(SubmitApplicationData $data): AdmissionApplication
+    {
+        return DB::transaction(function () use ($data) {
+            $program = Program::findOrFail($data-&gt;programId);
+
+            $application = AdmissionApplication::create([
+                'student_id' =&gt; $data-&gt;studentId,
+                'program_id' =&gt; $program-&gt;id,
+                'gpa'        =&gt; (new Gpa($data-&gt;gpa))-&gt;value, // يتحقق من الصحة
+                'status'     =&gt; ApplicationStatus::Draft,
+            ]);
+
+            $application-&gt;submit($program);
+
+            return $application;
+        });
+    }
+}</code></pre>
+<h3>قبول طلب (يلمس Aggregateين: الطلب والبرنامج)</h3>
+<p>هنا قاعدة مهمة: كل Aggregate يحمي نفسه، والـ Action ينسّق بينهما داخل Transaction واحدة. نستخدم <code>lockForUpdate</code> حتى لو قبل مديران طلبين في نفس اللحظة ما ينحجز مقعد زيادة.</p>
+<div class="file">src/Domain/Admissions/Actions/AcceptApplicationAction.php</div>
+<pre><code class="php">&lt;?php
+namespace Domain\Admissions\Actions;
+
+use Domain\Admissions\Models\AdmissionApplication;
+use Domain\Admissions\Models\Program;
+use Illuminate\Support\Facades\DB;
+
+final class AcceptApplicationAction
+{
+    public function execute(int $applicationId): AdmissionApplication
+    {
+        return DB::transaction(function () use ($applicationId) {
+            $application = AdmissionApplication::lockForUpdate()-&gt;findOrFail($applicationId);
+            $program     = Program::lockForUpdate()-&gt;findOrFail($application-&gt;program_id);
+
+            $program-&gt;reserveSeat();   // يرمي NoSeatsAvailable لو ما فيه مقاعد
+            $application-&gt;accept();    // يرمي InvalidTransition لو الحالة غلط
+
+            return $application;
+        });
+    }
+}</code></pre>
+
+<h2>الخطوة ١٢: التواصل بين السياقات (Listener)</h2>
+<p><b>الفكرة:</b> سياق Notifications يستمع لحدث Admissions. لو حذفنا Notifications كله، Admissions يشتغل بدون تغيير. لارافل تربط الـ Listener بالحدث من نوع الـ Type-hint في <code>handle()</code>.</p>
+<div class="file">src/Domain/Notifications/Listeners/NotifyStudentOfAcceptance.php</div>
+<pre><code class="php">&lt;?php
+namespace Domain\Notifications\Listeners;
+
+use Domain\Admissions\Events\ApplicationAccepted;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Support\Facades\Mail;
+
+final class NotifyStudentOfAcceptance implements ShouldQueue
+{
+    public function handle(ApplicationAccepted $event): void
+    {
+        $student = \App\Models\User::find($event-&gt;application-&gt;student_id);
+
+        Mail::to($student-&gt;email)-&gt;send(new \App\Mail\ApplicationAcceptedMail());
+    }
+}</code></pre>
+<p>الاكتشاف التلقائي افتراضياً يشتغل لمجلد <code>app/Listeners</code>. بما أن Listeners عندنا داخل <code>src/Domain</code> نضيف المسار في <code>bootstrap/app.php</code> (تحقق من الصيغة في توثيق 13):</p>
+<div class="file">bootstrap/app.php</div>
+<pre><code class="php">return Application::configure(basePath: dirname(__DIR__))
+    -&gt;withEvents(discover: [base_path('src/Domain/*/Listeners')])
+    // ...
+    -&gt;withExceptions(function (Exceptions $exceptions) {
+        // نحوّل أخطاء المجال إلى 422 مفهومة بدل 500
+        $exceptions-&gt;render(fn (\DomainException $e) =&gt;
+            response()-&gt;json(['message' =&gt; $e-&gt;getMessage()], 422)
+        );
+    })-&gt;create();</code></pre>
+
+<h2>الخطوة ١٣: طبقة الويب (Controller رفيع)</h2>
+<p>الـ Controller يفعل ثلاثة أشياء فقط: يستقبل، ينادي Action، يرد. لا قواعد هنا.</p>
+<div class="file">app/Http/Requests/SubmitApplicationRequest.php</div>
+<pre><code class="php">class SubmitApplicationRequest extends FormRequest
+{
+    public function rules(): array
+    {
+        return [
+            'program_id' =&gt; ['required', 'exists:programs,id'],
+            'gpa'        =&gt; ['required', 'numeric', 'between:0,5'], // تحقق شكلي فقط
+        ];
+    }
+}</code></pre>
+<div class="file">app/Http/Controllers/ApplicationController.php</div>
+<pre><code class="php">class ApplicationController extends Controller
+{
+    public function store(SubmitApplicationRequest $request, SubmitApplicationAction $submit)
+    {
+        $application = $submit-&gt;execute(new SubmitApplicationData(
+            studentId: $request-&gt;user()-&gt;id,
+            programId: $request-&gt;integer('program_id'),
+            gpa: $request-&gt;float('gpa'),
+        ));
+
+        return response()-&gt;json($application, 201);
+    }
+
+    public function accept(int $id, AcceptApplicationAction $accept)
+    {
+        return response()-&gt;json($accept-&gt;execute($id));
+    }
+}</code></pre>
+<div class="file">routes/api.php</div>
+<pre><code class="php">Route::middleware('auth:sanctum')-&gt;group(function () {
+    Route::post('/applications', [ApplicationController::class, 'store']);
+    Route::post('/applications/{id}/accept', [ApplicationController::class, 'accept']);
+});</code></pre>
+<div class="card why"><p><b>الفرق بين نوعي التحقق:</b> الـ FormRequest يتحقق من <i>شكل</i> المدخلات (هل رقم؟). المجال يتحقق من <i>قواعد العمل</i> (هل المعدل يكفي البرنامج؟). لا تخلطهما.</p></div>
+
+<h2>الخطوة ١٤: الاختبار (هنا تظهر الفائدة)</h2>
+<p>قواعد المجال تُختبر بدون HTTP وبسرعة. (Pest)</p>
+<pre><code class="php">use Domain\Admissions\ValueObjects\Gpa;
+
+it('rejects an invalid gpa', function () {
+    new Gpa(7);
+})-&gt;throws(InvalidArgumentException::class);
+
+it('cannot accept a draft application', function () {
+    $app = AdmissionApplication::factory()-&gt;create(['status' =&gt; ApplicationStatus::Draft]);
+
+    expect(fn () =&gt; $app-&gt;accept())-&gt;toThrow(InvalidTransition::class);
+});
+
+it('does not accept when no seats left', function () {
+    $program = Program::factory()-&gt;create(['seats' =&gt; 0]);
+    $app = AdmissionApplication::factory()-&gt;create([
+        'program_id' =&gt; $program-&gt;id,
+        'status' =&gt; ApplicationStatus::Submitted,
+    ]);
+
+    expect(fn () =&gt; (new AcceptApplicationAction)-&gt;execute($app-&gt;id))
+        -&gt;toThrow(NoSeatsAvailable::class);
+});</code></pre>
+
+<h2>الصورة الكاملة: مسار طلب «قبول»</h2>
+<ol>
+<li><code>POST /applications/5/accept</code> يصل لـ <b>Controller</b> (ويب فقط).</li>
+<li>الـ Controller ينادي <b>AcceptApplicationAction</b> (تنسيق + Transaction).</li>
+<li>الـ Action ينادي <code>$program-&gt;reserveSeat()</code> و<code>$application-&gt;accept()</code> (<b>قواعد المجال</b>).</li>
+<li>الموديل يرمي استثناء لو القاعدة انكسرت، فيتحول لـ 422 تلقائياً.</li>
+<li>بعد نجاح الـ Commit ينطلق <b>ApplicationAccepted</b>.</li>
+<li><b>Listener</b> في سياق Notifications يرسل الإيميل في الـ Queue.</li>
+</ol>
+
+<h2>أين أضع الكود؟ (جدول القرار)</h2>
+<div class="tbl"><table>
+<tr><th>السؤال</th><th>المكان</th></tr>
+<tr><td>قاعدة عمل تخص كياناً واحداً؟</td><td>دالة داخل الموديل</td></tr>
+<tr><td>قيمة لها قواعد (معدل، مبلغ، إيميل)؟</td><td>Value Object</td></tr>
+<tr><td>سيناريو كامل يلمس أكثر من كيان أو يحتاج Transaction؟</td><td>Action</td></tr>
+<tr><td>حالات محدودة وانتقالات؟</td><td>Enum</td></tr>
+<tr><td>شي حصل ويهم سياقاً آخر؟</td><td>Event + Listener</td></tr>
+<tr><td>التحقق من شكل المدخلات؟</td><td>FormRequest</td></tr>
+<tr><td>استعلامات متكررة؟</td><td>Query Builder مخصص (أو <code>#[UseEloquentBuilder]</code> في 13)</td></tr>
+</table></div>
+
+<h2>ما الذي تركته عمداً؟</h2>
+<p>ما استخدمت <b>Repository</b>: مع Eloquent غالباً زيادة تعقيد، وأضفه فقط لو احتجت عزل المجال عن مصدر بيانات خارجي. وما غطيت CQRS أو Event Sourcing لأنها مواضيع متقدمة ما تلزم أغلب المشاريع.</p>
+<p class="mut">المراجع: Eric Evans «Domain-Driven Design»؛ Vaughn Vernon «Implementing DDD»؛ Spatie «Laravel Beyond CRUD»؛ توثيق Laravel 13 للميزات المستخدمة.</p>
+</main>
+<script>
+(function(){
+var re=/(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|(#\[)|(\$\w+)|\b(namespace|use|final|readonly|class|function|public|private|protected|return|new|static|enum|interface|extends|implements|fn|match|case|if|throw|void|string|int|bool|float|array|self|true|false|null|it|expect|abstract)\b|(\b[A-Z]\w*)/g;
+function esc(x){return x.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+document.querySelectorAll("pre code").forEach(function(el){
+var lang=el.className,src=el.textContent;
+if(lang==="txt"){el.innerHTML=esc(src).replace(/(#.*)/g,'<span class="c">$1</span>');return}
+if(lang==="json"){el.innerHTML=esc(src).replace(/("(?:[^"\\]|\\.)*")/g,'<span class="s">$1</span>');return}
+var out="",last=0,m;re.lastIndex=0;
+while((m=re.exec(src))){out+=esc(src.slice(last,m.index));
+var cls=m[1]?"c":m[2]?"s":m[3]?"a":m[4]?"v":m[5]?"k":"t";
+out+='<span class="'+cls+'">'+esc(m[0])+'</span>';last=re.lastIndex}
+el.innerHTML=out+esc(src.slice(last))});
+})();
+</script>
+</body>
+</html>
