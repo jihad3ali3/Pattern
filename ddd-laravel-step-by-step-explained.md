@@ -480,7 +480,7 @@ src/Domain/
 وتضيف في `composer.json`:
 
 ```json
-"autoload": { "psr-4": { "App\\": "app/", "Domain\\": "src/Domain/" } }
+"autoload": { "psr-4": { "App\": "app/", "Domain\": "src/Domain/" } }
 ```
 
 ثم `composer dump-autoload`.
@@ -3764,7 +3764,7 @@ return new ApplicationResource($application);
 
 ```js
 (function () {
-  var re = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|(#\[)|(\$\w+)|\b(namespace|use|final|readonly|class|function|public|private|protected|return|new|static|enum|interface|extends|implements|fn|match|case|if|throw|void|string|int|bool|float|array|self|true|false|null|it|expect|abstract)\b|(\b[A-Z]\w*)/g;
+  var re=/(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|(#\[)|(\$\w+)|\b(namespace|use|final|readonly|class|function|public|private|protected|return|new|static|enum|interface|extends|implements|fn|match|case|if|throw|void|string|int|bool|float|array|self|true|false|null|it|expect|abstract)\b|(\b[A-Z]\w*)/g;
 
   function esc(x) {
     return x.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
