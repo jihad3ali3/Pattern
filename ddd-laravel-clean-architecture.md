@@ -1,277 +1,149 @@
-# DDD في Laravel — نسخة نظيفة مختصرة
+# تطبيق خارطة `Admissions/` وفق DDD و Clean Architecture في Laravel 13
 
-> إعادة بناء مختصرة لمثال «القبول الجامعي» بهيكلية نظيفة: مجال نقي، طبقات واضحة، منافذ ومحولات، واختبارات.
->
-> **بدون شرح مطوّل.** الكود هو الوثيقة. النسخة التفصيلية السابقة (٤٧٠٠ سطر) محفوظة في تاريخ Git عند الالتزام `85d4341` إن أردت الرجوع إليها.
->
-> الصفحة الأصلية: [`ddd-laravel-step-by-step.html`](./ddd-laravel-step-by-step.html)
+> تطبيق كامل ومترابط لموديول **القبول الجامعي (`Admissions/`)** وفق الخارطة المعمارية المطلوبة حرفياً، مع كتابة **المسار** و**اسم الصفحة** و**الوظيفة** فوق كل كود وداخل ترويسة كل ملف.
 
 ---
 
-## القاعدة الواحدة
+## ١. الخارطة المعمارية الكاملة والملفات المطبّقة
 
 ```text
-Presentation → Application → Domain ← Infrastructure
-```
-
-- **Domain**: قواعد العمل فقط. لا Eloquent، لا HTTP، لا Facades.
-- **Application**: سيناريو واحد لكل كلاس، يتحدث مع الخارج عبر منافذ.
-- **Infrastructure**: تنفيذ المنافذ (Eloquent، ساعة، طابور).
-- **Presentation**: استقبال، تفويض، استجابة.
-
-```text
-src/Admissions/
+Admissions/
 ├── Domain/
-│   ├── Exception/
-│   ├── Model/            # AdmissionApplication, Program, Gpa, Status, Events
-│   ├── Repository/       # واجهات فقط
-│   └── Service/          # AdmissionDecisionService
+│   ├── Entities/
+│   │   ├── Program.php
+│   │   └── AdmissionApplication.php
+│   ├── ValueObjects/
+│   │   ├── ApplicationId.php
+│   │   ├── ProgramId.php
+│   │   ├── StudentId.php
+│   │   └── Gpa.php
+│   ├── Enums/
+│   │   └── ApplicationStatus.php
+│   ├── Events/
+│   │   ├── ApplicationSubmitted.php
+│   │   ├── ApplicationAccepted.php
+│   │   ├── ApplicationRejected.php
+│   │   └── ApplicationWithdrawn.php
+│   ├── Exceptions/
+│   │   ├── HasErrorCode.php
+│   │   ├── AdmissionsDomainException.php
+│   │   ├── InvalidGpaException.php
+│   │   ├── InvalidTransitionException.php
+│   │   ├── GpaBelowMinimumException.php
+│   │   ├── NoSeatsAvailableException.php
+│   │   ├── AlreadyAppliedException.php
+│   │   ├── RejectionReasonRequiredException.php
+│   │   ├── ApplicationNotFoundException.php
+│   │   └── ProgramNotFoundException.php
+│   ├── Repositories/
+│   │   ├── AdmissionApplicationRepositoryInterface.php
+│   │   └── ProgramRepositoryInterface.php
+│   └── Services/
+│       └── AdmissionDecisionDomainService.php
 ├── Application/
-│   ├── Port/             # Clock, TransactionManager, DomainEventDispatcher, IdentifierGenerator
-│   ├── UseCase/          # Handler لكل سيناريو
-│   └── UnitOfWork.php    # معاملة + نشر الأحداث
+│   ├── DTOs/
+│   │   ├── SubmitApplicationDTO.php
+│   │   ├── RejectApplicationDTO.php
+│   │   └── ApplicationReadDTO.php
+│   ├── UseCases/
+│   │   ├── SubmitApplicationUseCase.php
+│   │   ├── AcceptApplicationUseCase.php
+│   │   ├── RejectApplicationUseCase.php
+│   │   ├── WithdrawApplicationUseCase.php
+│   │   └── ExpireDraftApplicationsUseCase.php
+│   ├── Interfaces/
+│   │   ├── ClockInterface.php
+│   │   ├── IdGeneratorInterface.php
+│   │   ├── TransactionManagerInterface.php
+│   │   ├── DomainEventDispatcherInterface.php
+│   │   └── ApplicantNotifierInterface.php
+│   └── Services/
+│       ├── UnitOfWorkService.php
+│       └── ApplicationQueryService.php
 ├── Infrastructure/
-│   ├── Persistence/      # Records, Repositories
-│   └── Provider/
-└── Presentation/Http/    # Controller, Request, ExceptionMap
-src/Notifications/
-└── Infrastructure/Listener/  # OnApplicationAccepted
+│   ├── Persistence/
+│   │   ├── Eloquent/
+│   │   │   ├── ApplicationEloquentModel.php
+│   │   │   └── ProgramEloquentModel.php
+│   │   └── Repositories/
+│   │       ├── EloquentAdmissionApplicationRepository.php
+│   │       └── EloquentProgramRepository.php
+│   ├── Events/
+│   │   ├── LaravelDomainEventDispatcher.php
+│   │   └── SendAcceptanceNotificationListener.php
+│   ├── Services/
+│   │   ├── SystemClockService.php
+│   │   ├── UlidGeneratorService.php
+│   │   ├── LaravelTransactionManager.php
+│   │   └── MailApplicantNotifierService.php
+│   └── Providers/
+│       └── AdmissionsServiceProvider.php
+└── Presentation/
+    ├── Http/
+    │   ├── Controllers/
+    │   │   └── AdmissionApplicationController.php
+    │   ├── Requests/
+    │   │   ├── SubmitApplicationRequest.php
+    │   │   └── RejectApplicationRequest.php
+    │   ├── Resources/
+    │   │   └── AdmissionApplicationResource.php
+    │   └── Middleware/
+    │       ├── EnsureAdmissionsWindowOpenMiddleware.php
+    │       └── RenderAdmissionsExceptionMiddleware.php
+    └── Console/
+        └── ExpireDraftApplicationsCommand.php
 ```
 
 ---
 
-## ١. القيمة `Gpa`
+## ٢. قاعدة اتجاه الاعتماديات (Dependency Rule)
 
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace Admissions\Domain\Model;
-
-use Admissions\Domain\Exception\InvalidGpa;
-
-final readonly class Gpa
-{
-    private function __construct(private float $value)
-    {
-    }
-
-    public static function fromFloat(float $value): self
-    {
-        if (! is_finite($value) || $value < 0.0 || $value > 5.0) {
-            throw InvalidGpa::outsideRange($value);
-        }
-
-        return new self(round($value, 2));
-    }
-
-    public static function fromDatabase(mixed $value): self
-    {
-        if (! is_numeric($value)) {
-            throw InvalidGpa::notNumeric($value);
-        }
-
-        return self::fromFloat((float) $value);
-    }
-
-    public function value(): float
-    {
-        return $this->value;
-    }
-
-    public function meets(self $minimum): bool
-    {
-        return $this->value >= $minimum->value;
-    }
-}
+```text
+Presentation ──► Application ──► Domain ◄── Infrastructure
 ```
 
-`is_finite` ضرورية: `NAN < 0` و`NAN > 5` كلتاهما `false`، فتمر من أي تحقق يعتمد على المقارنات وحدها.
+- **`Domain`**: لغة الأعمال وقواعدها فقط؛ لا يستورد أي شيء من `Illuminate` أو الطبقات الأخرى.
+- **`Application`**: ينسّق السيناريوهات (`UseCases`) ويتخاطب مع الخارج عبر واجهات (`Interfaces`) ومستودعات المجال (`Domain/Repositories`).
+- **`Infrastructure`**: ينفّذ واجهات المجال والتطبيق (`Eloquent`, `Events`, `Services`) ويربطها في `AdmissionsServiceProvider`.
+- **`Presentation`**: يستقبل طلبات HTTP وأوامر `Console`، يحوّل المدخلات إلى `DTOs`، ويعيد المخرجات عبر `Resources`.
 
 ---
 
-## ٢. الحالة والاستثناءات
+## أولاً: طبقة المجال — `Admissions/Domain/`
+
+طبقة المجال (Domain Layer) هي قلب النظام؛ تحتوي على الكيانات، كائنات القيمة، التعدادات، الأحداث، الاستثناءات، واجهات المستودعات، وخدمات المجال. **لا تعتمد على Laravel ولا على Eloquent ولا على HTTP إطلاقاً.**
+
+### ١. الكيانات والجذور — `Admissions/Domain/Entities/`
+
+#### `Program.php`
+
+- **المسار:** `Admissions/Domain/Entities/Program.php`
+- **اسم الصفحة:** `Program.php`
+- **الوظيفة:** كيان وجذر تجمّع (Aggregate Root) يمثل البرنامج الدراسي، يحمي ثوابت السعة الاستيعابية والمقاعد المحجوزة، ويوفر عمليات حجز المقعد وتحريره عند الانسحاب.
 
 ```php
 <?php
 
 declare(strict_types=1);
 
-namespace Admissions\Domain\Model;
+/**
+ * المسار: Admissions/Domain/Entities/Program.php
+ * اسم الصفحة: Program.php
+ * الوظيفة: كيان وجذر تجمّع (Aggregate Root) يمثل البرنامج الدراسي، يحمي ثوابت السعة الاستيعابية والمقاعد المحجوزة، ويوفر عمليات حجز المقعد وتحريره عند الانسحاب.
+ */
 
-enum ApplicationStatus: string
-{
-    case Draft = 'draft';
-    case Submitted = 'submitted';
-    case Accepted = 'accepted';
-    case Rejected = 'rejected';
-    case Withdrawn = 'withdrawn';
+namespace Admissions\Domain\Entities;
 
-    public function canTransitionTo(self $next): bool
-    {
-        return match ($this) {
-            self::Draft => $next === self::Submitted,
-            self::Submitted => in_array($next, [self::Accepted, self::Rejected, self::Withdrawn], true),
-            self::Accepted => $next === self::Withdrawn,
-            self::Rejected, self::Withdrawn => false,
-        };
-    }
-}
-```
-
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace Admissions\Domain\Exception;
-
-use DomainException;
-
-/** كل خطأ متوقع يحمل كوداً ثابتاً؛ طبقة العرض تحوّل الكود إلى HTTP. */
-interface HasErrorCode
-{
-    public function errorCode(): string;
-}
-
-abstract class AdmissionsException extends DomainException implements HasErrorCode
-{
-}
-
-final class InvalidGpa extends AdmissionsException
-{
-    public static function outsideRange(float $value): self
-    {
-        return new self("GPA must be between 0 and 5, got {$value}.");
-    }
-
-    public static function notNumeric(mixed $value): self
-    {
-        return new self('GPA must be numeric, got ' . get_debug_type($value) . '.');
-    }
-
-    public function errorCode(): string
-    {
-        return 'invalid_gpa';
-    }
-}
-
-final class InvalidTransition extends AdmissionsException
-{
-    public static function between(ApplicationStatus $from, ApplicationStatus $to): self
-    {
-        return new self("Cannot move application from [{$from->value}] to [{$to->value}].");
-    }
-
-    public function errorCode(): string
-    {
-        return 'invalid_transition';
-    }
-}
-
-final class GpaBelowMinimum extends AdmissionsException
-{
-    public static function for(float $actual, float $minimum): self
-    {
-        return new self("GPA [{$actual}] is below the minimum [{$minimum}].");
-    }
-
-    public function errorCode(): string
-    {
-        return 'gpa_below_minimum';
-    }
-}
-
-final class RejectionReasonRequired extends AdmissionsException
-{
-    public static function for(ApplicationId $applicationId): self
-    {
-        return new self("A rejection reason is required for application [{$applicationId->value}].");
-    }
-
-    public function errorCode(): string
-    {
-        return 'rejection_reason_required';
-    }
-}
-
-final class AlreadyApplied extends AdmissionsException
-{
-    public static function for(string $studentId, string $programId): self
-    {
-        return new self("Student [{$studentId}] already applied to program [{$programId}].");
-    }
-
-    public function errorCode(): string
-    {
-        return 'already_applied';
-    }
-}
-
-final class NoSeatsAvailable extends AdmissionsException
-{
-    public static function for(string $program): self
-    {
-        return new self("No seats available in [{$program}].");
-    }
-
-    public function errorCode(): string
-    {
-        return 'no_seats_available';
-    }
-}
-```
-
-> كل صنف في ملفه. جمعتها هنا للاختصار فقط.
-
----
-
-## ٣. المعرّفات
-
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace Admissions\Domain\Model;
-
-use InvalidArgumentException;
-
-final readonly class ApplicationId
-{
-    public function __construct(public string $value)
-    {
-        if (preg_match('/^[0-9A-HJKMNP-TV-Z]{26}$/', $value) !== 1) {
-            throw new InvalidArgumentException("Invalid ApplicationId [{$value}].");
-        }
-    }
-
-    public function equals(self $other): bool
-    {
-        return $this->value === $other->value;
-    }
-}
-```
-
-`ProgramId` و`StudentId` بنفس الشكل (الأخير بلا فحص ULID لأنه يعكس مفتاح جدول المستخدمين).
-
----
-
-## ٤. تجمّع `Program`
-
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace Admissions\Domain\Model;
-
-use Admissions\Domain\Exception\NoSeatsAvailable;
+use Admissions\Domain\Exceptions\NoSeatsAvailableException;
+use Admissions\Domain\ValueObjects\Gpa;
+use Admissions\Domain\ValueObjects\ProgramId;
 use LogicException;
 
 final class Program
 {
+    /** @var list<object> */
+    private array $domainEvents = [];
+
     private function __construct(
         private readonly ProgramId $id,
         private readonly string $name,
@@ -281,13 +153,23 @@ final class Program
     ) {
     }
 
-    public static function open(ProgramId $id, string $name, Gpa $minimumGpa, int $capacity): self
-    {
-        if ($capacity < 1) {
-            throw new LogicException('Capacity must be at least 1.');
+    public static function open(
+        ProgramId $id,
+        string $name,
+        Gpa $minimumGpa,
+        int $capacity,
+    ): self {
+        $trimmedName = trim($name);
+
+        if ($trimmedName === '') {
+            throw new LogicException('Program name cannot be empty.');
         }
 
-        return new self($id, $name, $minimumGpa, $capacity, 0);
+        if ($capacity < 1) {
+            throw new LogicException('Program capacity must be at least 1.');
+        }
+
+        return new self($id, $trimmedName, $minimumGpa, $capacity, 0);
     }
 
     public static function reconstitute(
@@ -298,7 +180,7 @@ final class Program
         int $reservedSeats,
     ): self {
         if ($capacity < 1 || $reservedSeats < 0 || $reservedSeats > $capacity) {
-            throw new LogicException('Corrupted program state.');
+            throw new LogicException('Corrupted program state: reserved seats must be between 0 and capacity.');
         }
 
         return new self($id, $name, $minimumGpa, $capacity, $reservedSeats);
@@ -337,7 +219,7 @@ final class Program
     public function reserveSeat(): void
     {
         if ($this->availableSeats() < 1) {
-            throw NoSeatsAvailable::for($this->name);
+            throw NoSeatsAvailableException::forProgram($this->name);
         }
 
         $this->reservedSeats++;
@@ -346,38 +228,60 @@ final class Program
     public function releaseSeat(): void
     {
         if ($this->reservedSeats < 1) {
-            throw new LogicException('No reserved seat to release.');
+            throw new LogicException('Cannot release a seat when no seats are reserved.');
         }
 
         $this->reservedSeats--;
     }
+
+    /** @return list<object> */
+    public function releaseEvents(): array
+    {
+        $events = $this->domainEvents;
+        $this->domainEvents = [];
+
+        return $events;
+    }
 }
 ```
 
-`capacity` و`reservedSeats` منفصلان، بخلاف `seats` في المثال الأصلي: بدون السعة لا يمكن تحرير مقعد أو منع تجاوزها.
+#### `AdmissionApplication.php`
 
----
-
-## ٥. تجمّع `AdmissionApplication`
+- **المسار:** `Admissions/Domain/Entities/AdmissionApplication.php`
+- **اسم الصفحة:** `AdmissionApplication.php`
+- **الوظيفة:** كيان وجذر تجمّع (Aggregate Root) يمثل طلب القبول الجامعي، يدير دورة حياة الطلب (تقديم، قبول، رفض، انسحاب)، يتحقق من شرط المعدل الأدنى وانتقالات الحالة، ويسجّل أحداث المجال داخلياً.
 
 ```php
 <?php
 
 declare(strict_types=1);
 
-namespace Admissions\Domain\Model;
+/**
+ * المسار: Admissions/Domain/Entities/AdmissionApplication.php
+ * اسم الصفحة: AdmissionApplication.php
+ * الوظيفة: كيان وجذر تجمّع (Aggregate Root) يمثل طلب القبول الجامعي، يدير دورة حياة الطلب (تقديم، قبول، رفض، انسحاب)، يتحقق من شرط المعدل الأدنى وانتقالات الحالة، ويسجّل أحداث المجال داخلياً.
+ */
 
-use Admissions\Domain\Exception\GpaBelowMinimum;
-use Admissions\Domain\Exception\InvalidTransition;
-use Admissions\Domain\Exception\RejectionReasonRequired;
-use Admissions\Domain\Model\Event\ApplicationAccepted;
-use Admissions\Domain\Model\Event\ApplicationSubmitted;
+namespace Admissions\Domain\Entities;
+
+use Admissions\Domain\Enums\ApplicationStatus;
+use Admissions\Domain\Events\ApplicationAccepted;
+use Admissions\Domain\Events\ApplicationRejected;
+use Admissions\Domain\Events\ApplicationSubmitted;
+use Admissions\Domain\Events\ApplicationWithdrawn;
+use Admissions\Domain\Exceptions\GpaBelowMinimumException;
+use Admissions\Domain\Exceptions\InvalidTransitionException;
+use Admissions\Domain\Exceptions\RejectionReasonRequiredException;
+use Admissions\Domain\ValueObjects\ApplicationId;
+use Admissions\Domain\ValueObjects\Gpa;
+use Admissions\Domain\ValueObjects\ProgramId;
+use Admissions\Domain\ValueObjects\StudentId;
 use DateTimeImmutable;
 
 final class AdmissionApplication
 {
     /** @var list<object> */
-    private array $events = [];
+    private array $domainEvents = [];
 
     private function __construct(
         private readonly ApplicationId $id,
@@ -386,6 +290,8 @@ final class AdmissionApplication
         private readonly Gpa $gpa,
         private ApplicationStatus $status,
         private ?string $decisionReason,
+        private ?DateTimeImmutable $submittedAt,
+        private ?DateTimeImmutable $decidedAt,
     ) {
     }
 
@@ -395,7 +301,16 @@ final class AdmissionApplication
         ProgramId $programId,
         Gpa $gpa,
     ): self {
-        return new self($id, $studentId, $programId, $gpa, ApplicationStatus::Draft, null);
+        return new self(
+            id: $id,
+            studentId: $studentId,
+            programId: $programId,
+            gpa: $gpa,
+            status: ApplicationStatus::Draft,
+            decisionReason: null,
+            submittedAt: null,
+            decidedAt: null,
+        );
     }
 
     public static function reconstitute(
@@ -405,8 +320,19 @@ final class AdmissionApplication
         Gpa $gpa,
         ApplicationStatus $status,
         ?string $decisionReason,
+        ?DateTimeImmutable $submittedAt = null,
+        ?DateTimeImmutable $decidedAt = null,
     ): self {
-        return new self($id, $studentId, $programId, $gpa, $status, $decisionReason);
+        return new self(
+            id: $id,
+            studentId: $studentId,
+            programId: $programId,
+            gpa: $gpa,
+            status: $status,
+            decisionReason: $decisionReason,
+            submittedAt: $submittedAt,
+            decidedAt: $decidedAt,
+        );
     }
 
     public function id(): ApplicationId
@@ -439,86 +365,455 @@ final class AdmissionApplication
         return $this->decisionReason;
     }
 
-    /** يتحقق من الأهلية والانتقال قبل أي تغيير. */
+    public function submittedAt(): ?DateTimeImmutable
+    {
+        return $this->submittedAt;
+    }
+
+    public function decidedAt(): ?DateTimeImmutable
+    {
+        return $this->decidedAt;
+    }
+
     public function submit(Gpa $minimumGpa, DateTimeImmutable $at): void
     {
-        $this->assertTransition(ApplicationStatus::Submitted);
+        $this->assertCanTransitionTo(ApplicationStatus::Submitted);
 
         if (! $this->gpa->meets($minimumGpa)) {
-            throw GpaBelowMinimum::for($this->gpa->value(), $minimumGpa->value());
+            throw GpaBelowMinimumException::forGpa($this->gpa->value(), $minimumGpa->value());
         }
 
         $this->status = ApplicationStatus::Submitted;
-        $this->events[] = new ApplicationSubmitted($this->id, $this->studentId, $this->programId, $at);
+        $this->submittedAt = $at;
+
+        $this->domainEvents[] = new ApplicationSubmitted(
+            applicationId: $this->id,
+            studentId: $this->studentId,
+            programId: $this->programId,
+            occurredAt: $at,
+        );
     }
 
-    /** لا يتحقق من المقاعد: خدمة المجال هي المسؤولة عن ذلك. */
     public function accept(DateTimeImmutable $at): void
     {
-        $this->assertTransition(ApplicationStatus::Accepted);
+        $this->assertCanTransitionTo(ApplicationStatus::Accepted);
 
         $this->status = ApplicationStatus::Accepted;
-        $this->events[] = new ApplicationAccepted($this->id, $this->studentId, $this->programId, $at);
+        $this->decisionReason = null;
+        $this->decidedAt = $at;
+
+        $this->domainEvents[] = new ApplicationAccepted(
+            applicationId: $this->id,
+            studentId: $this->studentId,
+            programId: $this->programId,
+            occurredAt: $at,
+        );
     }
 
-    public function reject(string $reason): void
+    public function reject(string $reason, DateTimeImmutable $at): void
     {
-        $this->assertTransition(ApplicationStatus::Rejected);
+        $this->assertCanTransitionTo(ApplicationStatus::Rejected);
 
-        $reason = trim($reason);
+        $trimmedReason = trim($reason);
 
-        if ($reason === '') {
-            throw RejectionReasonRequired::for($this->id);
+        if ($trimmedReason === '') {
+            throw RejectionReasonRequiredException::forApplication($this->id);
         }
 
         $this->status = ApplicationStatus::Rejected;
-        $this->decisionReason = $reason;
+        $this->decisionReason = $trimmedReason;
+        $this->decidedAt = $at;
+
+        $this->domainEvents[] = new ApplicationRejected(
+            applicationId: $this->id,
+            studentId: $this->studentId,
+            programId: $this->programId,
+            reason: $trimmedReason,
+            occurredAt: $at,
+        );
     }
 
-    public function withdraw(): void
+    public function withdraw(DateTimeImmutable $at): void
     {
-        $this->assertTransition(ApplicationStatus::Withdrawn);
+        $this->assertCanTransitionTo(ApplicationStatus::Withdrawn);
 
         $this->status = ApplicationStatus::Withdrawn;
+        $this->decidedAt = $at;
+
+        $this->domainEvents[] = new ApplicationWithdrawn(
+            applicationId: $this->id,
+            studentId: $this->studentId,
+            programId: $this->programId,
+            occurredAt: $at,
+        );
     }
 
     public function assertCanBeAccepted(): void
     {
-        $this->assertTransition(ApplicationStatus::Accepted);
+        $this->assertCanTransitionTo(ApplicationStatus::Accepted);
     }
 
     /** @return list<object> */
     public function releaseEvents(): array
     {
-        $events = $this->events;
-        $this->events = [];
+        $events = $this->domainEvents;
+        $this->domainEvents = [];
 
         return $events;
     }
 
-    private function assertTransition(ApplicationStatus $next): void
+    private function assertCanTransitionTo(ApplicationStatus $next): void
     {
         if (! $this->status->canTransitionTo($next)) {
-            throw InvalidTransition::between($this->status, $next);
+            throw InvalidTransitionException::between($this->status, $next);
         }
     }
 }
 ```
 
----
+### ٢. كائنات القيمة — `Admissions/Domain/ValueObjects/`
 
-## ٦. الأحداث
+#### `ApplicationId.php`
+
+- **المسار:** `Admissions/Domain/ValueObjects/ApplicationId.php`
+- **اسم الصفحة:** `ApplicationId.php`
+- **الوظيفة:** كائن قيمة (Value Object) يمثل المعرّف الفريد لطلب القبول بصيغة ULID ويمنع تمرير معرّفات غير صالحة أو الخلط بين معرّفات الكيانات المختلفة.
 
 ```php
 <?php
 
 declare(strict_types=1);
 
-namespace Admissions\Domain\Model\Event;
+/**
+ * المسار: Admissions/Domain/ValueObjects/ApplicationId.php
+ * اسم الصفحة: ApplicationId.php
+ * الوظيفة: كائن قيمة (Value Object) يمثل المعرّف الفريد لطلب القبول بصيغة ULID ويمنع تمرير معرّفات غير صالحة أو الخلط بين معرّفات الكيانات المختلفة.
+ */
 
-use Admissions\Domain\Model\ApplicationId;
-use Admissions\Domain\Model\ProgramId;
-use Admissions\Domain\Model\StudentId;
+namespace Admissions\Domain\ValueObjects;
+
+use InvalidArgumentException;
+
+final readonly class ApplicationId
+{
+    public function __construct(public string $value)
+    {
+        if (preg_match('/^[0-9A-HJKMNP-TV-Z]{26}$/i', $value) !== 1) {
+            throw new InvalidArgumentException("Invalid ApplicationId [{$value}]. Must be a 26-character ULID.");
+        }
+    }
+
+    public static function fromString(string $value): self
+    {
+        return new self($value);
+    }
+
+    public function value(): string
+    {
+        return $this->value;
+    }
+
+    public function equals(self $other): bool
+    {
+        return $this->value === $other->value;
+    }
+
+    public function __toString(): string
+    {
+        return $this->value;
+    }
+}
+```
+
+#### `ProgramId.php`
+
+- **المسار:** `Admissions/Domain/ValueObjects/ProgramId.php`
+- **اسم الصفحة:** `ProgramId.php`
+- **الوظيفة:** كائن قيمة (Value Object) يمثل المعرّف الفريد للبرنامج الدراسي بصيغة ULID لضمان سلامة النوع (Type Safety) وعدم الخلط بينه وبين معرّف الطلب أو الطالب.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Domain/ValueObjects/ProgramId.php
+ * اسم الصفحة: ProgramId.php
+ * الوظيفة: كائن قيمة (Value Object) يمثل المعرّف الفريد للبرنامج الدراسي بصيغة ULID لضمان سلامة النوع (Type Safety) وعدم الخلط بينه وبين معرّف الطلب أو الطالب.
+ */
+
+namespace Admissions\Domain\ValueObjects;
+
+use InvalidArgumentException;
+
+final readonly class ProgramId
+{
+    public function __construct(public string $value)
+    {
+        if (preg_match('/^[0-9A-HJKMNP-TV-Z]{26}$/i', $value) !== 1) {
+            throw new InvalidArgumentException("Invalid ProgramId [{$value}]. Must be a 26-character ULID.");
+        }
+    }
+
+    public static function fromString(string $value): self
+    {
+        return new self($value);
+    }
+
+    public function value(): string
+    {
+        return $this->value;
+    }
+
+    public function equals(self $other): bool
+    {
+        return $this->value === $other->value;
+    }
+
+    public function __toString(): string
+    {
+        return $this->value;
+    }
+}
+```
+
+#### `StudentId.php`
+
+- **المسار:** `Admissions/Domain/ValueObjects/StudentId.php`
+- **اسم الصفحة:** `StudentId.php`
+- **الوظيفة:** كائن قيمة (Value Object) يمثل معرّف الطالب المتقدّم ويضمن عدم تمرير قيمة فارغة داخل طبقة المجال.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Domain/ValueObjects/StudentId.php
+ * اسم الصفحة: StudentId.php
+ * الوظيفة: كائن قيمة (Value Object) يمثل معرّف الطالب المتقدّم ويضمن عدم تمرير قيمة فارغة داخل طبقة المجال.
+ */
+
+namespace Admissions\Domain\ValueObjects;
+
+use InvalidArgumentException;
+
+final readonly class StudentId
+{
+    public string $value;
+
+    public function __construct(string $value)
+    {
+        $trimmed = trim($value);
+
+        if ($trimmed === '') {
+            throw new InvalidArgumentException('StudentId cannot be empty.');
+        }
+
+        $this->value = $trimmed;
+    }
+
+    public static function fromString(string $value): self
+    {
+        return new self($value);
+    }
+
+    public function value(): string
+    {
+        return $this->value;
+    }
+
+    public function equals(self $other): bool
+    {
+        return $this->value === $other->value;
+    }
+
+    public function __toString(): string
+    {
+        return $this->value;
+    }
+}
+```
+
+#### `Gpa.php`
+
+- **المسار:** `Admissions/Domain/ValueObjects/Gpa.php`
+- **اسم الصفحة:** `Gpa.php`
+- **الوظيفة:** كائن قيمة (Value Object) غير قابل للتغيير يمثل المعدل التراكمي للطالب، يتحقق من وقوعه بين 0.0 و 5.0، ويوفر سلوك مقارنته بالحد الأدنى للبرنامج.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Domain/ValueObjects/Gpa.php
+ * اسم الصفحة: Gpa.php
+ * الوظيفة: كائن قيمة (Value Object) غير قابل للتغيير يمثل المعدل التراكمي للطالب، يتحقق من وقوعه بين 0.0 و 5.0، ويوفر سلوك مقارنته بالحد الأدنى للبرنامج.
+ */
+
+namespace Admissions\Domain\ValueObjects;
+
+use Admissions\Domain\Exceptions\InvalidGpaException;
+
+final readonly class Gpa
+{
+    private function __construct(private float $value)
+    {
+    }
+
+    public static function fromFloat(float $value): self
+    {
+        if (! is_finite($value) || $value < 0.0 || $value > 5.0) {
+            throw InvalidGpaException::outsideRange($value);
+        }
+
+        return new self(round($value, 2));
+    }
+
+    public static function fromDatabase(mixed $value): self
+    {
+        if (! is_numeric($value)) {
+            throw InvalidGpaException::notNumeric($value);
+        }
+
+        return self::fromFloat((float) $value);
+    }
+
+    public function value(): float
+    {
+        return $this->value;
+    }
+
+    public function meets(self $minimum): bool
+    {
+        return $this->value >= $minimum->value;
+    }
+
+    public function equals(self $other): bool
+    {
+        return $this->value === $other->value;
+    }
+}
+```
+
+### ٣. التعدادات — `Admissions/Domain/Enums/`
+
+#### `ApplicationStatus.php`
+
+- **المسار:** `Admissions/Domain/Enums/ApplicationStatus.php`
+- **اسم الصفحة:** `ApplicationStatus.php`
+- **الوظيفة:** تعداد (Enum) يمثل الحالات الممكنة لطلب القبول الجامعي ويحدد جدول الانتقالات المسموحة بينها كآلة حالة (State Machine).
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Domain/Enums/ApplicationStatus.php
+ * اسم الصفحة: ApplicationStatus.php
+ * الوظيفة: تعداد (Enum) يمثل الحالات الممكنة لطلب القبول الجامعي ويحدد جدول الانتقالات المسموحة بينها كآلة حالة (State Machine).
+ */
+
+namespace Admissions\Domain\Enums;
+
+enum ApplicationStatus: string
+{
+    case Draft = 'draft';
+    case Submitted = 'submitted';
+    case Accepted = 'accepted';
+    case Rejected = 'rejected';
+    case Withdrawn = 'withdrawn';
+
+    public function canTransitionTo(self $next): bool
+    {
+        return match ($this) {
+            self::Draft => $next === self::Submitted,
+            self::Submitted => in_array($next, [self::Accepted, self::Rejected, self::Withdrawn], true),
+            self::Accepted => $next === self::Withdrawn,
+            self::Rejected, self::Withdrawn => false,
+        };
+    }
+
+    public function label(): string
+    {
+        return match ($this) {
+            self::Draft => 'مسودة',
+            self::Submitted => 'مُقدَّم',
+            self::Accepted => 'مقبول',
+            self::Rejected => 'مرفوض',
+            self::Withdrawn => 'منسحب',
+        };
+    }
+
+    public function isFinal(): bool
+    {
+        return in_array($this, [self::Rejected, self::Withdrawn], true);
+    }
+}
+```
+
+### ٤. أحداث المجال — `Admissions/Domain/Events/`
+
+#### `ApplicationSubmitted.php`
+
+- **المسار:** `Admissions/Domain/Events/ApplicationSubmitted.php`
+- **اسم الصفحة:** `ApplicationSubmitted.php`
+- **الوظيفة:** حدث مجال (Domain Event) غير قابل للتغيير يُسجَّل عند نجاح الطالب في تقديم طلب القبول وتحقيقه للحد الأدنى للمعدل.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Domain/Events/ApplicationSubmitted.php
+ * اسم الصفحة: ApplicationSubmitted.php
+ * الوظيفة: حدث مجال (Domain Event) غير قابل للتغيير يُسجَّل عند نجاح الطالب في تقديم طلب القبول وتحقيقه للحد الأدنى للمعدل.
+ */
+
+namespace Admissions\Domain\Events;
+
+use Admissions\Domain\ValueObjects\ApplicationId;
+use Admissions\Domain\ValueObjects\ProgramId;
+use Admissions\Domain\ValueObjects\StudentId;
+use DateTimeImmutable;
+
+final readonly class ApplicationSubmitted
+{
+    public function __construct(
+        public ApplicationId $applicationId,
+        public StudentId $studentId,
+        public ProgramId $programId,
+        public DateTimeImmutable $occurredAt,
+    ) {
+    }
+}
+```
+
+#### `ApplicationAccepted.php`
+
+- **المسار:** `Admissions/Domain/Events/ApplicationAccepted.php`
+- **اسم الصفحة:** `ApplicationAccepted.php`
+- **الوظيفة:** حدث مجال (Domain Event) غير قابل للتغيير يُسجَّل عند قبول الطلب وحجز مقعد فعلي له في البرنامج الدراسي، وتستمع إليه الأنظمة الخارجية مثل الإشعارات.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Domain/Events/ApplicationAccepted.php
+ * اسم الصفحة: ApplicationAccepted.php
+ * الوظيفة: حدث مجال (Domain Event) غير قابل للتغيير يُسجَّل عند قبول الطلب وحجز مقعد فعلي له في البرنامج الدراسي، وتستمع إليه الأنظمة الخارجية مثل الإشعارات.
+ */
+
+namespace Admissions\Domain\Events;
+
+use Admissions\Domain\ValueObjects\ApplicationId;
+use Admissions\Domain\ValueObjects\ProgramId;
+use Admissions\Domain\ValueObjects\StudentId;
 use DateTimeImmutable;
 
 final readonly class ApplicationAccepted
@@ -533,118 +828,363 @@ final readonly class ApplicationAccepted
 }
 ```
 
-`ApplicationSubmitted` بنفس الشكل. الأحداث تُسجَّل داخل التجمّع ولا تُرسل منه.
+#### `ApplicationRejected.php`
 
----
-
-## ٧. خدمة المجال
+- **المسار:** `Admissions/Domain/Events/ApplicationRejected.php`
+- **اسم الصفحة:** `ApplicationRejected.php`
+- **الوظيفة:** حدث مجال (Domain Event) غير قابل للتغيير يُسجَّل عند رفض طلب القبول مع الاحتفاظ بسبب الرفض ووقت حدوث القرار.
 
 ```php
 <?php
 
 declare(strict_types=1);
 
-namespace Admissions\Domain\Service;
+/**
+ * المسار: Admissions/Domain/Events/ApplicationRejected.php
+ * اسم الصفحة: ApplicationRejected.php
+ * الوظيفة: حدث مجال (Domain Event) غير قابل للتغيير يُسجَّل عند رفض طلب القبول مع الاحتفاظ بسبب الرفض ووقت حدوث القرار.
+ */
 
-use Admissions\Domain\Model\AdmissionApplication;
-use Admissions\Domain\Model\ApplicationStatus;
-use Admissions\Domain\Model\Program;
+namespace Admissions\Domain\Events;
+
+use Admissions\Domain\ValueObjects\ApplicationId;
+use Admissions\Domain\ValueObjects\ProgramId;
+use Admissions\Domain\ValueObjects\StudentId;
 use DateTimeImmutable;
-use LogicException;
 
-final class AdmissionDecisionService
+final readonly class ApplicationRejected
 {
-    public function accept(AdmissionApplication $application, Program $program, DateTimeImmutable $at): void
-    {
-        if (! $application->programId()->equals($program->id())) {
-            throw new LogicException('Application and program do not match.');
-        }
-
-        // فشل سريع قبل حجز أي مقعد.
-        $application->assertCanBeAccepted();
-
-        $program->reserveSeat();
-        $application->accept($at);
-    }
-
-    public function withdraw(AdmissionApplication $application, Program $program): void
-    {
-        $hadSeat = $application->status() === ApplicationStatus::Accepted;
-
-        $application->withdraw();
-
-        if ($hadSeat) {
-            $program->releaseSeat();
-        }
+    public function __construct(
+        public ApplicationId $applicationId,
+        public StudentId $studentId,
+        public ProgramId $programId,
+        public string $reason,
+        public DateTimeImmutable $occurredAt,
+    ) {
     }
 }
 ```
 
-هذه هي الطريقة الموثقة للثوابت التي تعبر تجمّعين: **خدمة مجال**. لا يمكن حماية «لا قبول بدون مقعد» داخل كيان واحد.
+#### `ApplicationWithdrawn.php`
 
----
-
-## ٨. مستودعات المجال
+- **المسار:** `Admissions/Domain/Events/ApplicationWithdrawn.php`
+- **اسم الصفحة:** `ApplicationWithdrawn.php`
+- **الوظيفة:** حدث مجال (Domain Event) غير قابل للتغيير يُسجَّل عند انسحاب الطالب من طلب القبول (سواء قبل القبول أو بعده).
 
 ```php
 <?php
 
 declare(strict_types=1);
 
-namespace Admissions\Domain\Repository;
+/**
+ * المسار: Admissions/Domain/Events/ApplicationWithdrawn.php
+ * اسم الصفحة: ApplicationWithdrawn.php
+ * الوظيفة: حدث مجال (Domain Event) غير قابل للتغيير يُسجَّل عند انسحاب الطالب من طلب القبول (سواء قبل القبول أو بعده).
+ */
 
-use Admissions\Domain\Model\AdmissionApplication;
-use Admissions\Domain\Model\ApplicationId;
-use Admissions\Domain\Model\ProgramId;
-use Admissions\Domain\Model\StudentId;
+namespace Admissions\Domain\Events;
 
-interface AdmissionApplicationRepository
+use Admissions\Domain\ValueObjects\ApplicationId;
+use Admissions\Domain\ValueObjects\ProgramId;
+use Admissions\Domain\ValueObjects\StudentId;
+use DateTimeImmutable;
+
+final readonly class ApplicationWithdrawn
 {
-    public function find(ApplicationId $id): ?AdmissionApplication;
-
-    /** قراءة بقصد التعديل؛ التنفيذ يقرر القفل. */
-    public function findForUpdate(ApplicationId $id): ?AdmissionApplication;
-
-    public function existsFor(StudentId $student, ProgramId $program): bool;
-
-    public function save(AdmissionApplication $application): void;
+    public function __construct(
+        public ApplicationId $applicationId,
+        public StudentId $studentId,
+        public ProgramId $programId,
+        public DateTimeImmutable $occurredAt,
+    ) {
+    }
 }
 ```
 
-```php
-interface ProgramRepository
-{
-    public function find(ProgramId $id): ?Program;
+### ٥. استثناءات المجال — `Admissions/Domain/Exceptions/`
 
-    public function findForUpdate(ProgramId $id): ?Program;
+#### `HasErrorCode.php`
 
-    public function save(Program $program): void;
-}
-```
-
----
-
-## ٩. استثناءات التطبيق
+- **المسار:** `Admissions/Domain/Exceptions/HasErrorCode.php`
+- **اسم الصفحة:** `HasErrorCode.php`
+- **الوظيفة:** عقد (Interface) يُلزم استثناءات المجال بتوفير كود خطأ نصي ثابت يمكن لطبقة العرض ترجمته إلى حالة HTTP مناسبة دون تلويث المجال بتفاصيل HTTP.
 
 ```php
 <?php
 
 declare(strict_types=1);
 
-namespace Admissions\Application\Exception;
+/**
+ * المسار: Admissions/Domain/Exceptions/HasErrorCode.php
+ * اسم الصفحة: HasErrorCode.php
+ * الوظيفة: عقد (Interface) يُلزم استثناءات المجال بتوفير كود خطأ نصي ثابت يمكن لطبقة العرض ترجمته إلى حالة HTTP مناسبة دون تلويث المجال بتفاصيل HTTP.
+ */
 
-use Admissions\Domain\Exception\HasErrorCode;
-use RuntimeException;
+namespace Admissions\Domain\Exceptions;
 
-abstract class ApplicationException extends RuntimeException implements HasErrorCode
+interface HasErrorCode
+{
+    public function errorCode(): string;
+}
+```
+
+#### `AdmissionsDomainException.php`
+
+- **المسار:** `Admissions/Domain/Exceptions/AdmissionsDomainException.php`
+- **اسم الصفحة:** `AdmissionsDomainException.php`
+- **الوظيفة:** الصنف الأب المجرد لجميع استثناءات مجال القبول الجامعي؛ يرث من DomainException ويطبق واجهة HasErrorCode.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Domain/Exceptions/AdmissionsDomainException.php
+ * اسم الصفحة: AdmissionsDomainException.php
+ * الوظيفة: الصنف الأب المجرد لجميع استثناءات مجال القبول الجامعي؛ يرث من DomainException ويطبق واجهة HasErrorCode.
+ */
+
+namespace Admissions\Domain\Exceptions;
+
+use DomainException;
+
+abstract class AdmissionsDomainException extends DomainException implements HasErrorCode
 {
 }
+```
 
-final class ApplicationNotFound extends ApplicationException
+#### `InvalidGpaException.php`
+
+- **المسار:** `Admissions/Domain/Exceptions/InvalidGpaException.php`
+- **اسم الصفحة:** `InvalidGpaException.php`
+- **الوظيفة:** استثناء مجال يُرمى عند محاولة إنشاء كائن معدل تراكمي (Gpa) بقيمة غير رقمية أو خارج النطاق المسموح (0.0 إلى 5.0).
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Domain/Exceptions/InvalidGpaException.php
+ * اسم الصفحة: InvalidGpaException.php
+ * الوظيفة: استثناء مجال يُرمى عند محاولة إنشاء كائن معدل تراكمي (Gpa) بقيمة غير رقمية أو خارج النطاق المسموح (0.0 إلى 5.0).
+ */
+
+namespace Admissions\Domain\Exceptions;
+
+final class InvalidGpaException extends AdmissionsDomainException
 {
-    public static function withId(string $id): self
+    public static function outsideRange(float $value): self
     {
-        return new self("Application [{$id}] was not found.");
+        return new self("GPA must be between 0.0 and 5.0, got [{$value}].");
+    }
+
+    public static function notNumeric(mixed $value): self
+    {
+        return new self('GPA must be numeric, got [' . get_debug_type($value) . '].');
+    }
+
+    public function errorCode(): string
+    {
+        return 'invalid_gpa';
+    }
+}
+```
+
+#### `InvalidTransitionException.php`
+
+- **المسار:** `Admissions/Domain/Exceptions/InvalidTransitionException.php`
+- **اسم الصفحة:** `InvalidTransitionException.php`
+- **الوظيفة:** استثناء مجال يُرمى عند محاولة نقل طلب القبول من حالة إلى حالة أخرى غير مسموح بها في دورة حياة الطلب.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Domain/Exceptions/InvalidTransitionException.php
+ * اسم الصفحة: InvalidTransitionException.php
+ * الوظيفة: استثناء مجال يُرمى عند محاولة نقل طلب القبول من حالة إلى حالة أخرى غير مسموح بها في دورة حياة الطلب.
+ */
+
+namespace Admissions\Domain\Exceptions;
+
+use Admissions\Domain\Enums\ApplicationStatus;
+
+final class InvalidTransitionException extends AdmissionsDomainException
+{
+    public static function between(ApplicationStatus $from, ApplicationStatus $to): self
+    {
+        return new self("Cannot transition application from [{$from->value}] to [{$to->value}].");
+    }
+
+    public function errorCode(): string
+    {
+        return 'invalid_transition';
+    }
+}
+```
+
+#### `GpaBelowMinimumException.php`
+
+- **المسار:** `Admissions/Domain/Exceptions/GpaBelowMinimumException.php`
+- **اسم الصفحة:** `GpaBelowMinimumException.php`
+- **الوظيفة:** استثناء مجال يُرمى عند محاولة تقديم طلب قبول بمعدل تراكمي أقل من الحد الأدنى المشترط للبرنامج الدراسي.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Domain/Exceptions/GpaBelowMinimumException.php
+ * اسم الصفحة: GpaBelowMinimumException.php
+ * الوظيفة: استثناء مجال يُرمى عند محاولة تقديم طلب قبول بمعدل تراكمي أقل من الحد الأدنى المشترط للبرنامج الدراسي.
+ */
+
+namespace Admissions\Domain\Exceptions;
+
+final class GpaBelowMinimumException extends AdmissionsDomainException
+{
+    public static function forGpa(float $actual, float $minimum): self
+    {
+        return new self("Student GPA [{$actual}] is below the program minimum [{$minimum}].");
+    }
+
+    public function errorCode(): string
+    {
+        return 'gpa_below_minimum';
+    }
+}
+```
+
+#### `NoSeatsAvailableException.php`
+
+- **المسار:** `Admissions/Domain/Exceptions/NoSeatsAvailableException.php`
+- **اسم الصفحة:** `NoSeatsAvailableException.php`
+- **الوظيفة:** استثناء مجال يُرمى عند محاولة حجز مقعد لطالب في برنامج دراسي استنفد كامل سعته الاستيعابية.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Domain/Exceptions/NoSeatsAvailableException.php
+ * اسم الصفحة: NoSeatsAvailableException.php
+ * الوظيفة: استثناء مجال يُرمى عند محاولة حجز مقعد لطالب في برنامج دراسي استنفد كامل سعته الاستيعابية.
+ */
+
+namespace Admissions\Domain\Exceptions;
+
+final class NoSeatsAvailableException extends AdmissionsDomainException
+{
+    public static function forProgram(string $programName): self
+    {
+        return new self("No seats available in program [{$programName}].");
+    }
+
+    public function errorCode(): string
+    {
+        return 'no_seats_available';
+    }
+}
+```
+
+#### `AlreadyAppliedException.php`
+
+- **المسار:** `Admissions/Domain/Exceptions/AlreadyAppliedException.php`
+- **اسم الصفحة:** `AlreadyAppliedException.php`
+- **الوظيفة:** استثناء مجال يُرمى عند محاولة الطالب التقديم مرتين على نفس البرنامج الدراسي.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Domain/Exceptions/AlreadyAppliedException.php
+ * اسم الصفحة: AlreadyAppliedException.php
+ * الوظيفة: استثناء مجال يُرمى عند محاولة الطالب التقديم مرتين على نفس البرنامج الدراسي.
+ */
+
+namespace Admissions\Domain\Exceptions;
+
+final class AlreadyAppliedException extends AdmissionsDomainException
+{
+    public static function forStudentAndProgram(string $studentId, string $programId): self
+    {
+        return new self("Student [{$studentId}] has already applied to program [{$programId}].");
+    }
+
+    public function errorCode(): string
+    {
+        return 'already_applied';
+    }
+}
+```
+
+#### `RejectionReasonRequiredException.php`
+
+- **المسار:** `Admissions/Domain/Exceptions/RejectionReasonRequiredException.php`
+- **اسم الصفحة:** `RejectionReasonRequiredException.php`
+- **الوظيفة:** استثناء مجال يُرمى عند محاولة رفض طلب قبول دون ذكر سبب واضح للرفض.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Domain/Exceptions/RejectionReasonRequiredException.php
+ * اسم الصفحة: RejectionReasonRequiredException.php
+ * الوظيفة: استثناء مجال يُرمى عند محاولة رفض طلب قبول دون ذكر سبب واضح للرفض.
+ */
+
+namespace Admissions\Domain\Exceptions;
+
+use Admissions\Domain\ValueObjects\ApplicationId;
+
+final class RejectionReasonRequiredException extends AdmissionsDomainException
+{
+    public static function forApplication(ApplicationId $applicationId): self
+    {
+        return new self("A non-empty rejection reason is required for application [{$applicationId->value}].");
+    }
+
+    public function errorCode(): string
+    {
+        return 'rejection_reason_required';
+    }
+}
+```
+
+#### `ApplicationNotFoundException.php`
+
+- **المسار:** `Admissions/Domain/Exceptions/ApplicationNotFoundException.php`
+- **اسم الصفحة:** `ApplicationNotFoundException.php`
+- **الوظيفة:** استثناء يُرمى عند البحث عن طلب قبول بمعرّف غير موجود في النظام.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Domain/Exceptions/ApplicationNotFoundException.php
+ * اسم الصفحة: ApplicationNotFoundException.php
+ * الوظيفة: استثناء يُرمى عند البحث عن طلب قبول بمعرّف غير موجود في النظام.
+ */
+
+namespace Admissions\Domain\Exceptions;
+
+final class ApplicationNotFoundException extends AdmissionsDomainException
+{
+    public static function withId(string $applicationId): self
+    {
+        return new self("Admission application [{$applicationId}] was not found.");
     }
 
     public function errorCode(): string
@@ -652,12 +1192,32 @@ final class ApplicationNotFound extends ApplicationException
         return 'application_not_found';
     }
 }
+```
 
-final class ProgramNotFound extends ApplicationException
+#### `ProgramNotFoundException.php`
+
+- **المسار:** `Admissions/Domain/Exceptions/ProgramNotFoundException.php`
+- **اسم الصفحة:** `ProgramNotFoundException.php`
+- **الوظيفة:** استثناء يُرمى عند محاولة التقديم أو الاستعلام عن برنامج دراسي غير موجود.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Domain/Exceptions/ProgramNotFoundException.php
+ * اسم الصفحة: ProgramNotFoundException.php
+ * الوظيفة: استثناء يُرمى عند محاولة التقديم أو الاستعلام عن برنامج دراسي غير موجود.
+ */
+
+namespace Admissions\Domain\Exceptions;
+
+final class ProgramNotFoundException extends AdmissionsDomainException
 {
-    public static function withId(string $id): self
+    public static function withId(string $programId): self
     {
-        return new self("Program [{$id}] was not found.");
+        return new self("Academic program [{$programId}] was not found.");
     }
 
     public function errorCode(): string
@@ -667,73 +1227,769 @@ final class ProgramNotFound extends ApplicationException
 }
 ```
 
-`ApplicationException` ليست خطأ مجال: «غير موجود» نتيجة استعلام لا انتهاك قاعدة. لكنها تحمل كوداً ليُوحَّد تحويلها في طبقة العرض.
+### ٦. واجهات المستودعات — `Admissions/Domain/Repositories/`
 
----
+#### `AdmissionApplicationRepositoryInterface.php`
 
-## ١٠. منافذ التطبيق ووحدة العمل
+- **المسار:** `Admissions/Domain/Repositories/AdmissionApplicationRepositoryInterface.php`
+- **اسم الصفحة:** `AdmissionApplicationRepositoryInterface.php`
+- **الوظيفة:** واجهة مستودع المجال (Domain Repository Interface) تحدد عقد استرجاع وحفظ كيان طلب القبول دون الارتباط بـ Eloquent أو أي قاعدة بيانات معينة.
 
 ```php
 <?php
 
 declare(strict_types=1);
 
-namespace Admissions\Application\Port;
+/**
+ * المسار: Admissions/Domain/Repositories/AdmissionApplicationRepositoryInterface.php
+ * اسم الصفحة: AdmissionApplicationRepositoryInterface.php
+ * الوظيفة: واجهة مستودع المجال (Domain Repository Interface) تحدد عقد استرجاع وحفظ كيان طلب القبول دون الارتباط بـ Eloquent أو أي قاعدة بيانات معينة.
+ */
 
+namespace Admissions\Domain\Repositories;
+
+use Admissions\Domain\Entities\AdmissionApplication;
+use Admissions\Domain\ValueObjects\ApplicationId;
+use Admissions\Domain\ValueObjects\ProgramId;
+use Admissions\Domain\ValueObjects\StudentId;
 use DateTimeImmutable;
 
-interface Clock
+interface AdmissionApplicationRepositoryInterface
 {
-    public function now(): DateTimeImmutable;
-}
+    public function find(ApplicationId $id): ?AdmissionApplication;
 
-interface TransactionManager
-{
-    /**
-     * @template T
-     *
-     * @param  callable():T  $work
-     * @return T
-     */
-    public function transactional(callable $work): mixed;
-}
+    /** قراءة السجل مع قفل التحديث التشاؤمي (SELECT ... FOR UPDATE) لمنع حالات السباق. */
+    public function findForUpdate(ApplicationId $id): ?AdmissionApplication;
 
-interface DomainEventDispatcher
-{
-    public function dispatch(object $event): void;
-}
+    public function existsForStudentAndProgram(StudentId $studentId, ProgramId $programId): bool;
 
-interface IdentifierGenerator
-{
-    public function next(): string;
+    public function save(AdmissionApplication $application): void;
+
+    /** حذف المسودات المهجورة التي لم تُقدَّم قبل التاريخ المحدد وإرجاع عدد السجلات المحذوفة. */
+    public function deleteDraftsOlderThan(DateTimeImmutable $cutoff): int;
 }
 ```
 
+#### `ProgramRepositoryInterface.php`
+
+- **المسار:** `Admissions/Domain/Repositories/ProgramRepositoryInterface.php`
+- **اسم الصفحة:** `ProgramRepositoryInterface.php`
+- **الوظيفة:** واجهة مستودع المجال (Domain Repository Interface) تحدد عقد استرجاع وحفظ تجمّع البرنامج الدراسي مع دعم القفل التشاؤمي عند حجز أو تحرير المقاعد.
+
 ```php
 <?php
 
 declare(strict_types=1);
 
-namespace Admissions\Application;
+/**
+ * المسار: Admissions/Domain/Repositories/ProgramRepositoryInterface.php
+ * اسم الصفحة: ProgramRepositoryInterface.php
+ * الوظيفة: واجهة مستودع المجال (Domain Repository Interface) تحدد عقد استرجاع وحفظ تجمّع البرنامج الدراسي مع دعم القفل التشاؤمي عند حجز أو تحرير المقاعد.
+ */
 
-use Admissions\Application\Port\DomainEventDispatcher;
-use Admissions\Application\Port\TransactionManager;
+namespace Admissions\Domain\Repositories;
 
-final class UnitOfWork
+use Admissions\Domain\Entities\Program;
+use Admissions\Domain\ValueObjects\ProgramId;
+
+interface ProgramRepositoryInterface
 {
-    /** @var list<object> */
-    private array $events = [];
+    public function find(ProgramId $id): ?Program;
 
+    /** قراءة البرنامج مع قفل الصف (SELECT ... FOR UPDATE) لحماية عداد المقاعد من التعديل المتزامن. */
+    public function findForUpdate(ProgramId $id): ?Program;
+
+    public function save(Program $program): void;
+}
+```
+
+### ٧. خدمات المجال — `Admissions/Domain/Services/`
+
+#### `AdmissionDecisionDomainService.php`
+
+- **المسار:** `Admissions/Domain/Services/AdmissionDecisionDomainService.php`
+- **اسم الصفحة:** `AdmissionDecisionDomainService.php`
+- **الوظيفة:** خدمة مجال (Domain Service) تنسّق قواعد العمل التي تعبر تجمّعين معاً (AdmissionApplication و Program) مثل اشتراط توفر مقعد قبل القبول، وتحرير المقعد المحجوز عند انسحاب طالب مقبول.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Domain/Services/AdmissionDecisionDomainService.php
+ * اسم الصفحة: AdmissionDecisionDomainService.php
+ * الوظيفة: خدمة مجال (Domain Service) تنسّق قواعد العمل التي تعبر تجمّعين معاً (AdmissionApplication و Program) مثل اشتراط توفر مقعد قبل القبول، وتحرير المقعد المحجوز عند انسحاب طالب مقبول.
+ */
+
+namespace Admissions\Domain\Services;
+
+use Admissions\Domain\Entities\AdmissionApplication;
+use Admissions\Domain\Entities\Program;
+use Admissions\Domain\Enums\ApplicationStatus;
+use DateTimeImmutable;
+use LogicException;
+
+final class AdmissionDecisionDomainService
+{
+    public function accept(
+        AdmissionApplication $application,
+        Program $program,
+        DateTimeImmutable $at,
+    ): void {
+        if (! $application->programId()->equals($program->id())) {
+            throw new LogicException('Application programId does not match the target Program aggregate.');
+        }
+
+        // التحقق السريع من قابلية قبول الطلب قبل لمس مقاعد البرنامج
+        $application->assertCanBeAccepted();
+
+        // حجز المقعد أولاً (يرمي NoSeatsAvailableException إن امتلأ البرنامج)
+        $program->reserveSeat();
+
+        // تغيير حالة الطلب وتسجيل حدث ApplicationAccepted
+        $application->accept($at);
+    }
+
+    public function withdraw(
+        AdmissionApplication $application,
+        Program $program,
+        DateTimeImmutable $at,
+    ): void {
+        if (! $application->programId()->equals($program->id())) {
+            throw new LogicException('Application programId does not match the target Program aggregate.');
+        }
+
+        $wasAccepted = $application->status() === ApplicationStatus::Accepted;
+
+        $application->withdraw($at);
+
+        if ($wasAccepted) {
+            $program->releaseSeat();
+        }
+    }
+}
+```
+
+---
+
+## ثانياً: طبقة التطبيق — `Admissions/Application/`
+
+طبقة التطبيق (Application Layer) تنسّق حالات الاستخدام (Use Cases) وتدير المعاملات ونشر الأحداث عبر منافذ مجردة (`Interfaces`) وكائنات نقل البيانات (`DTOs`). تعرف `Domain` فقط ولا تعرف `Infrastructure` ولا `Presentation`.
+
+### ١. كائنات نقل البيانات — `Admissions/Application/DTOs/`
+
+#### `SubmitApplicationDTO.php`
+
+- **المسار:** `Admissions/Application/DTOs/SubmitApplicationDTO.php`
+- **اسم الصفحة:** `SubmitApplicationDTO.php`
+- **الوظيفة:** كائن نقل بيانات (DTO) يحمل مدخلات تقديم طلب قبول جديد من طبقة العرض إلى حالة الاستخدام SubmitApplicationUseCase دون تمرير كائن Request.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Application/DTOs/SubmitApplicationDTO.php
+ * اسم الصفحة: SubmitApplicationDTO.php
+ * الوظيفة: كائن نقل بيانات (DTO) يحمل مدخلات تقديم طلب قبول جديد من طبقة العرض إلى حالة الاستخدام SubmitApplicationUseCase دون تمرير كائن Request.
+ */
+
+namespace Admissions\Application\DTOs;
+
+final readonly class SubmitApplicationDTO
+{
     public function __construct(
-        private readonly TransactionManager $transactions,
-        private readonly DomainEventDispatcher $dispatcher,
+        public string $studentId,
+        public string $programId,
+        public float $gpa,
+    ) {
+    }
+}
+```
+
+#### `RejectApplicationDTO.php`
+
+- **المسار:** `Admissions/Application/DTOs/RejectApplicationDTO.php`
+- **اسم الصفحة:** `RejectApplicationDTO.php`
+- **الوظيفة:** كائن نقل بيانات (DTO) يحمل معرّف الطلب وسبب الرفض من طبقة العرض إلى حالة الاستخدام RejectApplicationUseCase.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Application/DTOs/RejectApplicationDTO.php
+ * اسم الصفحة: RejectApplicationDTO.php
+ * الوظيفة: كائن نقل بيانات (DTO) يحمل معرّف الطلب وسبب الرفض من طبقة العرض إلى حالة الاستخدام RejectApplicationUseCase.
+ */
+
+namespace Admissions\Application\DTOs;
+
+final readonly class RejectApplicationDTO
+{
+    public function __construct(
+        public string $applicationId,
+        public string $reason,
+    ) {
+    }
+}
+```
+
+#### `ApplicationReadDTO.php`
+
+- **المسار:** `Admissions/Application/DTOs/ApplicationReadDTO.php`
+- **اسم الصفحة:** `ApplicationReadDTO.php`
+- **الوظيفة:** كائن نقل بيانات للقراءة (Read DTO) يعيد بيانات طلب القبول من طبقة التطبيق إلى طبقة العرض دون تسريب كيان المجال أو نموذج Eloquent.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Application/DTOs/ApplicationReadDTO.php
+ * اسم الصفحة: ApplicationReadDTO.php
+ * الوظيفة: كائن نقل بيانات للقراءة (Read DTO) يعيد بيانات طلب القبول من طبقة التطبيق إلى طبقة العرض دون تسريب كيان المجال أو نموذج Eloquent.
+ */
+
+namespace Admissions\Application\DTOs;
+
+use Admissions\Domain\Entities\AdmissionApplication;
+use DateTimeInterface;
+
+final readonly class ApplicationReadDTO
+{
+    public function __construct(
+        public string $id,
+        public string $studentId,
+        public string $programId,
+        public float $gpa,
+        public string $status,
+        public string $statusLabel,
+        public ?string $decisionReason,
+        public ?string $submittedAt,
+        public ?string $decidedAt,
     ) {
     }
 
-    public function collect(object ...$aggregates): void
+    public static function fromEntity(AdmissionApplication $application): self
+    {
+        return new self(
+            id: $application->id()->value(),
+            studentId: $application->studentId()->value(),
+            programId: $application->programId()->value(),
+            gpa: $application->gpa()->value(),
+            status: $application->status()->value,
+            statusLabel: $application->status()->label(),
+            decisionReason: $application->decisionReason(),
+            submittedAt: $application->submittedAt()?->format(DateTimeInterface::ATOM),
+            decidedAt: $application->decidedAt()?->format(DateTimeInterface::ATOM),
+        );
+    }
+}
+```
+
+### ٢. حالات الاستخدام — `Admissions/Application/UseCases/`
+
+#### `SubmitApplicationUseCase.php`
+
+- **المسار:** `Admissions/Application/UseCases/SubmitApplicationUseCase.php`
+- **اسم الصفحة:** `SubmitApplicationUseCase.php`
+- **الوظيفة:** حالة استخدام (Use Case) تنسّق سيناريو تقديم طلب قبول جديد: التحقق من وجود البرنامج وعدم تكرار التقديم، إنشاء الطلب وتقديمه، حفظه، ونشر حدث التقديم.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Application/UseCases/SubmitApplicationUseCase.php
+ * اسم الصفحة: SubmitApplicationUseCase.php
+ * الوظيفة: حالة استخدام (Use Case) تنسّق سيناريو تقديم طلب قبول جديد: التحقق من وجود البرنامج وعدم تكرار التقديم، إنشاء الطلب وتقديمه، حفظه، ونشر حدث التقديم.
+ */
+
+namespace Admissions\Application\UseCases;
+
+use Admissions\Application\DTOs\ApplicationReadDTO;
+use Admissions\Application\DTOs\SubmitApplicationDTO;
+use Admissions\Application\Interfaces\ClockInterface;
+use Admissions\Application\Interfaces\IdGeneratorInterface;
+use Admissions\Application\Services\UnitOfWorkService;
+use Admissions\Domain\Entities\AdmissionApplication;
+use Admissions\Domain\Exceptions\AlreadyAppliedException;
+use Admissions\Domain\Exceptions\ProgramNotFoundException;
+use Admissions\Domain\Repositories\AdmissionApplicationRepositoryInterface;
+use Admissions\Domain\Repositories\ProgramRepositoryInterface;
+use Admissions\Domain\ValueObjects\ApplicationId;
+use Admissions\Domain\ValueObjects\Gpa;
+use Admissions\Domain\ValueObjects\ProgramId;
+use Admissions\Domain\ValueObjects\StudentId;
+
+final readonly class SubmitApplicationUseCase
+{
+    public function __construct(
+        private AdmissionApplicationRepositoryInterface $applicationRepository,
+        private ProgramRepositoryInterface $programRepository,
+        private IdGeneratorInterface $idGenerator,
+        private ClockInterface $clock,
+        private UnitOfWorkService $unitOfWork,
+    ) {
+    }
+
+    public function execute(SubmitApplicationDTO $dto): ApplicationReadDTO
+    {
+        $studentId = StudentId::fromString($dto->studentId);
+        $programId = ProgramId::fromString($dto->programId);
+        $gpa = Gpa::fromFloat($dto->gpa);
+
+        return $this->unitOfWork->execute(
+            function () use ($studentId, $programId, $gpa): ApplicationReadDTO {
+                $program = $this->programRepository->find($programId)
+                    ?? throw ProgramNotFoundException::withId($programId->value());
+
+                if ($this->applicationRepository->existsForStudentAndProgram($studentId, $programId)) {
+                    throw AlreadyAppliedException::forStudentAndProgram(
+                        $studentId->value(),
+                        $programId->value(),
+                    );
+                }
+
+                $application = AdmissionApplication::draft(
+                    id: ApplicationId::fromString($this->idGenerator->nextUlid()),
+                    studentId: $studentId,
+                    programId: $programId,
+                    gpa: $gpa,
+                );
+
+                $application->submit($program->minimumGpa(), $this->clock->now());
+
+                $this->applicationRepository->save($application);
+                $this->unitOfWork->collectEventsFrom($application);
+
+                return ApplicationReadDTO::fromEntity($application);
+            }
+        );
+    }
+}
+```
+
+#### `AcceptApplicationUseCase.php`
+
+- **المسار:** `Admissions/Application/UseCases/AcceptApplicationUseCase.php`
+- **اسم الصفحة:** `AcceptApplicationUseCase.php`
+- **الوظيفة:** حالة استخدام (Use Case) تنسّق سيناريو قبول طلب الطالب: قفل الطلب والبرنامج بترتيب ثابت، تفويض القرار وحجز المقعد لخدمة المجال، حفظ التغييرات، ونشر حدث القبول.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Application/UseCases/AcceptApplicationUseCase.php
+ * اسم الصفحة: AcceptApplicationUseCase.php
+ * الوظيفة: حالة استخدام (Use Case) تنسّق سيناريو قبول طلب الطالب: قفل الطلب والبرنامج بترتيب ثابت، تفويض القرار وحجز المقعد لخدمة المجال، حفظ التغييرات، ونشر حدث القبول.
+ */
+
+namespace Admissions\Application\UseCases;
+
+use Admissions\Application\DTOs\ApplicationReadDTO;
+use Admissions\Application\Interfaces\ClockInterface;
+use Admissions\Application\Services\UnitOfWorkService;
+use Admissions\Domain\Exceptions\ApplicationNotFoundException;
+use Admissions\Domain\Exceptions\ProgramNotFoundException;
+use Admissions\Domain\Repositories\AdmissionApplicationRepositoryInterface;
+use Admissions\Domain\Repositories\ProgramRepositoryInterface;
+use Admissions\Domain\Services\AdmissionDecisionDomainService;
+use Admissions\Domain\ValueObjects\ApplicationId;
+
+final readonly class AcceptApplicationUseCase
+{
+    public function __construct(
+        private AdmissionApplicationRepositoryInterface $applicationRepository,
+        private ProgramRepositoryInterface $programRepository,
+        private AdmissionDecisionDomainService $decisionService,
+        private ClockInterface $clock,
+        private UnitOfWorkService $unitOfWork,
+    ) {
+    }
+
+    public function execute(string $applicationId): ApplicationReadDTO
+    {
+        $id = ApplicationId::fromString($applicationId);
+
+        return $this->unitOfWork->execute(function () use ($id): ApplicationReadDTO {
+            // قفل الطلب أولاً ثم البرنامج دائماً لمنع الـ Deadlock
+            $application = $this->applicationRepository->findForUpdate($id)
+                ?? throw ApplicationNotFoundException::withId($id->value());
+
+            $program = $this->programRepository->findForUpdate($application->programId())
+                ?? throw ProgramNotFoundException::withId($application->programId()->value());
+
+            $this->decisionService->accept($application, $program, $this->clock->now());
+
+            $this->applicationRepository->save($application);
+            $this->programRepository->save($program);
+
+            $this->unitOfWork->collectEventsFrom($application, $program);
+
+            return ApplicationReadDTO::fromEntity($application);
+        });
+    }
+}
+```
+
+#### `RejectApplicationUseCase.php`
+
+- **المسار:** `Admissions/Application/UseCases/RejectApplicationUseCase.php`
+- **اسم الصفحة:** `RejectApplicationUseCase.php`
+- **الوظيفة:** حالة استخدام (Use Case) تنسّق سيناريو رفض طلب القبول مع إلزامية ذكر سبب الرفض وحفظ القرار ونشر حدث الرفض.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Application/UseCases/RejectApplicationUseCase.php
+ * اسم الصفحة: RejectApplicationUseCase.php
+ * الوظيفة: حالة استخدام (Use Case) تنسّق سيناريو رفض طلب القبول مع إلزامية ذكر سبب الرفض وحفظ القرار ونشر حدث الرفض.
+ */
+
+namespace Admissions\Application\UseCases;
+
+use Admissions\Application\DTOs\ApplicationReadDTO;
+use Admissions\Application\DTOs\RejectApplicationDTO;
+use Admissions\Application\Interfaces\ClockInterface;
+use Admissions\Application\Services\UnitOfWorkService;
+use Admissions\Domain\Exceptions\ApplicationNotFoundException;
+use Admissions\Domain\Repositories\AdmissionApplicationRepositoryInterface;
+use Admissions\Domain\ValueObjects\ApplicationId;
+
+final readonly class RejectApplicationUseCase
+{
+    public function __construct(
+        private AdmissionApplicationRepositoryInterface $applicationRepository,
+        private ClockInterface $clock,
+        private UnitOfWorkService $unitOfWork,
+    ) {
+    }
+
+    public function execute(RejectApplicationDTO $dto): ApplicationReadDTO
+    {
+        $id = ApplicationId::fromString($dto->applicationId);
+
+        return $this->unitOfWork->execute(function () use ($id, $dto): ApplicationReadDTO {
+            $application = $this->applicationRepository->findForUpdate($id)
+                ?? throw ApplicationNotFoundException::withId($id->value());
+
+            $application->reject($dto->reason, $this->clock->now());
+
+            $this->applicationRepository->save($application);
+            $this->unitOfWork->collectEventsFrom($application);
+
+            return ApplicationReadDTO::fromEntity($application);
+        });
+    }
+}
+```
+
+#### `WithdrawApplicationUseCase.php`
+
+- **المسار:** `Admissions/Application/UseCases/WithdrawApplicationUseCase.php`
+- **اسم الصفحة:** `WithdrawApplicationUseCase.php`
+- **الوظيفة:** حالة استخدام (Use Case) تنسّق سيناريو انسحاب الطالب من الطلب، وتعيد المقعد المحجوز إلى البرنامج الدراسي إذا كان الطلب مقبولاً مسبقاً.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Application/UseCases/WithdrawApplicationUseCase.php
+ * اسم الصفحة: WithdrawApplicationUseCase.php
+ * الوظيفة: حالة استخدام (Use Case) تنسّق سيناريو انسحاب الطالب من الطلب، وتعيد المقعد المحجوز إلى البرنامج الدراسي إذا كان الطلب مقبولاً مسبقاً.
+ */
+
+namespace Admissions\Application\UseCases;
+
+use Admissions\Application\DTOs\ApplicationReadDTO;
+use Admissions\Application\Interfaces\ClockInterface;
+use Admissions\Application\Services\UnitOfWorkService;
+use Admissions\Domain\Exceptions\ApplicationNotFoundException;
+use Admissions\Domain\Exceptions\ProgramNotFoundException;
+use Admissions\Domain\Repositories\AdmissionApplicationRepositoryInterface;
+use Admissions\Domain\Repositories\ProgramRepositoryInterface;
+use Admissions\Domain\Services\AdmissionDecisionDomainService;
+use Admissions\Domain\ValueObjects\ApplicationId;
+
+final readonly class WithdrawApplicationUseCase
+{
+    public function __construct(
+        private AdmissionApplicationRepositoryInterface $applicationRepository,
+        private ProgramRepositoryInterface $programRepository,
+        private AdmissionDecisionDomainService $decisionService,
+        private ClockInterface $clock,
+        private UnitOfWorkService $unitOfWork,
+    ) {
+    }
+
+    public function execute(string $applicationId): ApplicationReadDTO
+    {
+        $id = ApplicationId::fromString($applicationId);
+
+        return $this->unitOfWork->execute(function () use ($id): ApplicationReadDTO {
+            $application = $this->applicationRepository->findForUpdate($id)
+                ?? throw ApplicationNotFoundException::withId($id->value());
+
+            $program = $this->programRepository->findForUpdate($application->programId())
+                ?? throw ProgramNotFoundException::withId($application->programId()->value());
+
+            $this->decisionService->withdraw($application, $program, $this->clock->now());
+
+            $this->applicationRepository->save($application);
+            $this->programRepository->save($program);
+
+            $this->unitOfWork->collectEventsFrom($application, $program);
+
+            return ApplicationReadDTO::fromEntity($application);
+        });
+    }
+}
+```
+
+#### `ExpireDraftApplicationsUseCase.php`
+
+- **المسار:** `Admissions/Application/UseCases/ExpireDraftApplicationsUseCase.php`
+- **اسم الصفحة:** `ExpireDraftApplicationsUseCase.php`
+- **الوظيفة:** حالة استخدام (Use Case) تحذف مسودات طلبات القبول المتروكة لفترة تتجاوز عدد الأيام المحدد، وتُستدعى من أوامر الـ Console المجدولة.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Application/UseCases/ExpireDraftApplicationsUseCase.php
+ * اسم الصفحة: ExpireDraftApplicationsUseCase.php
+ * الوظيفة: حالة استخدام (Use Case) تحذف مسودات طلبات القبول المتروكة لفترة تتجاوز عدد الأيام المحدد، وتُستدعى من أوامر الـ Console المجدولة.
+ */
+
+namespace Admissions\Application\UseCases;
+
+use Admissions\Application\Interfaces\ClockInterface;
+use Admissions\Domain\Repositories\AdmissionApplicationRepositoryInterface;
+use InvalidArgumentException;
+
+final readonly class ExpireDraftApplicationsUseCase
+{
+    public function __construct(
+        private AdmissionApplicationRepositoryInterface $applicationRepository,
+        private ClockInterface $clock,
+    ) {
+    }
+
+    public function execute(int $olderThanDays = 30): int
+    {
+        if ($olderThanDays < 1) {
+            throw new InvalidArgumentException('Days threshold must be at least 1.');
+        }
+
+        $cutoff = $this->clock->now()->modify("-{$olderThanDays} days");
+
+        return $this->applicationRepository->deleteDraftsOlderThan($cutoff);
+    }
+}
+```
+
+### ٣. واجهات ومنافذ التطبيق — `Admissions/Application/Interfaces/`
+
+#### `ClockInterface.php`
+
+- **المسار:** `Admissions/Application/Interfaces/ClockInterface.php`
+- **اسم الصفحة:** `ClockInterface.php`
+- **الوظيفة:** منفذ (Port / Interface) للحصول على الوقت الحالي، يسمح بتثبيت الوقت أثناء الاختبارات بدلاً من الاعتماد المباشر على ساعة النظام.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Application/Interfaces/ClockInterface.php
+ * اسم الصفحة: ClockInterface.php
+ * الوظيفة: منفذ (Port / Interface) للحصول على الوقت الحالي، يسمح بتثبيت الوقت أثناء الاختبارات بدلاً من الاعتماد المباشر على ساعة النظام.
+ */
+
+namespace Admissions\Application\Interfaces;
+
+use DateTimeImmutable;
+
+interface ClockInterface
+{
+    public function now(): DateTimeImmutable;
+}
+```
+
+#### `IdGeneratorInterface.php`
+
+- **المسار:** `Admissions/Application/Interfaces/IdGeneratorInterface.php`
+- **اسم الصفحة:** `IdGeneratorInterface.php`
+- **الوظيفة:** منفذ (Port / Interface) لتوليد معرّفات فريدة بصيغة ULID للكيانات الجديدة دون ربط طبقة التطبيق بمكتبة Laravel Str مباشرة.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Application/Interfaces/IdGeneratorInterface.php
+ * اسم الصفحة: IdGeneratorInterface.php
+ * الوظيفة: منفذ (Port / Interface) لتوليد معرّفات فريدة بصيغة ULID للكيانات الجديدة دون ربط طبقة التطبيق بمكتبة Laravel Str مباشرة.
+ */
+
+namespace Admissions\Application\Interfaces;
+
+interface IdGeneratorInterface
+{
+    public function nextUlid(): string;
+}
+```
+
+#### `TransactionManagerInterface.php`
+
+- **المسار:** `Admissions/Application/Interfaces/TransactionManagerInterface.php`
+- **اسم الصفحة:** `TransactionManagerInterface.php`
+- **الوظيفة:** منفذ (Port / Interface) لإدارة معاملات قاعدة البيانات (Database Transactions) بشكل مجرد عن إطار العمل.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Application/Interfaces/TransactionManagerInterface.php
+ * اسم الصفحة: TransactionManagerInterface.php
+ * الوظيفة: منفذ (Port / Interface) لإدارة معاملات قاعدة البيانات (Database Transactions) بشكل مجرد عن إطار العمل.
+ */
+
+namespace Admissions\Application\Interfaces;
+
+interface TransactionManagerInterface
+{
+    /**
+     * @template T
+     *
+     * @param  callable():T  $callback
+     * @return T
+     */
+    public function transactional(callable $callback): mixed;
+}
+```
+
+#### `DomainEventDispatcherInterface.php`
+
+- **المسار:** `Admissions/Application/Interfaces/DomainEventDispatcherInterface.php`
+- **اسم الصفحة:** `DomainEventDispatcherInterface.php`
+- **الوظيفة:** منفذ (Port / Interface) لنشر أحداث المجال بعد نجاح المعاملة (Commit) إلى المستمعين الخارجيين.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Application/Interfaces/DomainEventDispatcherInterface.php
+ * اسم الصفحة: DomainEventDispatcherInterface.php
+ * الوظيفة: منفذ (Port / Interface) لنشر أحداث المجال بعد نجاح المعاملة (Commit) إلى المستمعين الخارجيين.
+ */
+
+namespace Admissions\Application\Interfaces;
+
+interface DomainEventDispatcherInterface
+{
+    public function dispatch(object $event): void;
+}
+```
+
+#### `ApplicantNotifierInterface.php`
+
+- **المسار:** `Admissions/Application/Interfaces/ApplicantNotifierInterface.php`
+- **اسم الصفحة:** `ApplicantNotifierInterface.php`
+- **الوظيفة:** منفذ (Port / Interface) لإرسال إشعارات القبول للطالب دون ربط طبقة التطبيق بتفاصيل البريد الإلكتروني أو خدمة الإشعارات في البنية التحتية.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Application/Interfaces/ApplicantNotifierInterface.php
+ * اسم الصفحة: ApplicantNotifierInterface.php
+ * الوظيفة: منفذ (Port / Interface) لإرسال إشعارات القبول للطالب دون ربط طبقة التطبيق بتفاصيل البريد الإلكتروني أو خدمة الإشعارات في البنية التحتية.
+ */
+
+namespace Admissions\Application\Interfaces;
+
+use Admissions\Domain\ValueObjects\ApplicationId;
+use Admissions\Domain\ValueObjects\ProgramId;
+use Admissions\Domain\ValueObjects\StudentId;
+
+interface ApplicantNotifierInterface
+{
+    public function sendAcceptanceNotification(
+        StudentId $studentId,
+        ProgramId $programId,
+        ApplicationId $applicationId,
+    ): void;
+}
+```
+
+### ٤. خدمات التطبيق — `Admissions/Application/Services/`
+
+#### `UnitOfWorkService.php`
+
+- **المسار:** `Admissions/Application/Services/UnitOfWorkService.php`
+- **اسم الصفحة:** `UnitOfWorkService.php`
+- **الوظيفة:** خدمة تطبيق تدير وحدة العمل (Unit of Work): تنفّذ العمليات داخل معاملة قاعدة بيانات واحدة، تجمع أحداث المجال من الجذور (Aggregates)، وتنشرها فقط بعد نجاح الـ Commit.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Application/Services/UnitOfWorkService.php
+ * اسم الصفحة: UnitOfWorkService.php
+ * الوظيفة: خدمة تطبيق تدير وحدة العمل (Unit of Work): تنفّذ العمليات داخل معاملة قاعدة بيانات واحدة، تجمع أحداث المجال من الجذور (Aggregates)، وتنشرها فقط بعد نجاح الـ Commit.
+ */
+
+namespace Admissions\Application\Services;
+
+use Admissions\Application\Interfaces\DomainEventDispatcherInterface;
+use Admissions\Application\Interfaces\TransactionManagerInterface;
+
+final class UnitOfWorkService
+{
+    /** @var list<object> */
+    private array $collectedEvents = [];
+
+    public function __construct(
+        private readonly TransactionManagerInterface $transactionManager,
+        private readonly DomainEventDispatcherInterface $eventDispatcher,
+    ) {
+    }
+
+    public function collectEventsFrom(object ...$aggregates): void
     {
         foreach ($aggregates as $aggregate) {
-            array_push($this->events, ...$aggregate->releaseEvents());
+            if (method_exists($aggregate, 'releaseEvents')) {
+                /** @var list<object> $events */
+                $events = $aggregate->releaseEvents();
+                array_push($this->collectedEvents, ...$events);
+            }
         }
     }
 
@@ -743,152 +1999,117 @@ final class UnitOfWork
      * @param  callable():T  $work
      * @return T
      */
-    public function run(callable $work): mixed
+    public function execute(callable $work): mixed
     {
-        $result = $this->transactions->transactional($work);
+        $this->collectedEvents = [];
 
-        // لا نصل إلى هنا إلا بعد نجاح الـ commit.
-        foreach ($this->events as $event) {
-            $this->dispatcher->dispatch($event);
+        try {
+            $result = $this->transactionManager->transactional(function () use ($work) {
+                $this->collectedEvents = [];
+
+                return $work();
+            });
+        } catch (\Throwable $exception) {
+            $this->collectedEvents = [];
+
+            throw $exception;
         }
 
-        $this->events = [];
+        $eventsToDispatch = $this->collectedEvents;
+        $this->collectedEvents = [];
+
+        foreach ($eventsToDispatch as $event) {
+            $this->eventDispatcher->dispatch($event);
+        }
 
         return $result;
     }
 }
 ```
 
-سجّلها `scoped` لا `singleton`، وإلا تسرّبت أحداث طلب إلى طلب آخر داخل عامل الطابور.
+#### `ApplicationQueryService.php`
 
----
-
-## ١١. المعالجات
+- **المسار:** `Admissions/Application/Services/ApplicationQueryService.php`
+- **اسم الصفحة:** `ApplicationQueryService.php`
+- **الوظيفة:** خدمة تطبيق مسؤولة عن استعلامات القراءة الخاصة بطلبات القبول وإرجاعها ككائنات ApplicationReadDTO لطبقة العرض.
 
 ```php
 <?php
 
 declare(strict_types=1);
 
-namespace Admissions\Application\UseCase;
+/**
+ * المسار: Admissions/Application/Services/ApplicationQueryService.php
+ * اسم الصفحة: ApplicationQueryService.php
+ * الوظيفة: خدمة تطبيق مسؤولة عن استعلامات القراءة الخاصة بطلبات القبول وإرجاعها ككائنات ApplicationReadDTO لطبقة العرض.
+ */
 
-use Admissions\Application\Exception\ProgramNotFound;
-use Admissions\Application\Port\Clock;
-use Admissions\Application\Port\IdentifierGenerator;
-use Admissions\Application\UnitOfWork;
-use Admissions\Domain\Exception\AlreadyApplied;
-use Admissions\Domain\Model\AdmissionApplication;
-use Admissions\Domain\Model\ApplicationId;
-use Admissions\Domain\Model\Gpa;
-use Admissions\Domain\Model\ProgramId;
-use Admissions\Domain\Model\StudentId;
-use Admissions\Domain\Repository\AdmissionApplicationRepository;
-use Admissions\Domain\Repository\ProgramRepository;
+namespace Admissions\Application\Services;
 
-final readonly class SubmitApplicationHandler
+use Admissions\Application\DTOs\ApplicationReadDTO;
+use Admissions\Domain\Exceptions\ApplicationNotFoundException;
+use Admissions\Domain\Repositories\AdmissionApplicationRepositoryInterface;
+use Admissions\Domain\ValueObjects\ApplicationId;
+
+final readonly class ApplicationQueryService
 {
     public function __construct(
-        private AdmissionApplicationRepository $applications,
-        private ProgramRepository $programs,
-        private IdentifierGenerator $ids,
-        private Clock $clock,
-        private UnitOfWork $unitOfWork,
+        private AdmissionApplicationRepositoryInterface $applicationRepository,
     ) {
     }
 
-    public function __invoke(StudentId $studentId, ProgramId $programId, float $gpa): string
+    public function getById(string $applicationId): ApplicationReadDTO
     {
-        return $this->unitOfWork->run(function () use ($studentId, $programId, $gpa): string {
-            $program = $this->programs->find($programId)
-                ?? throw ProgramNotFound::withId($programId->value);
+        $id = ApplicationId::fromString($applicationId);
 
-            if ($this->applications->existsFor($studentId, $programId)) {
-                throw AlreadyApplied::for($studentId->value, $programId->value);
-            }
+        $application = $this->applicationRepository->find($id)
+            ?? throw ApplicationNotFoundException::withId($id->value());
 
-            $application = AdmissionApplication::draft(
-                new ApplicationId($this->ids->next()),
-                $studentId,
-                $programId,
-                Gpa::fromFloat($gpa),
-            );
-
-            $application->submit($program->minimumGpa(), $this->clock->now());
-
-            $this->applications->save($application);
-            $this->unitOfWork->collect($application);
-
-            return $application->id()->value;
-        });
+        return ApplicationReadDTO::fromEntity($application);
     }
 }
 ```
 
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace Admissions\Application\UseCase;
-
-use Admissions\Application\Exception\ApplicationNotFound;
-use Admissions\Application\Exception\ProgramNotFound;
-use Admissions\Application\Port\Clock;
-use Admissions\Application\UnitOfWork;
-use Admissions\Domain\Model\ApplicationId;
-use Admissions\Domain\Repository\AdmissionApplicationRepository;
-use Admissions\Domain\Repository\ProgramRepository;
-use Admissions\Domain\Service\AdmissionDecisionService;
-
-final readonly class AcceptApplicationHandler
-{
-    public function __construct(
-        private AdmissionApplicationRepository $applications,
-        private ProgramRepository $programs,
-        private AdmissionDecisionService $decisions,
-        private Clock $clock,
-        private UnitOfWork $unitOfWork,
-    ) {
-    }
-
-    public function __invoke(ApplicationId $applicationId): void
-    {
-        $this->unitOfWork->run(function () use ($applicationId): void {
-            // ترتيب الأقفال ثابت: الطلب ثم البرنامج (منع الجمود).
-            $application = $this->applications->findForUpdate($applicationId)
-                ?? throw ApplicationNotFound::withId($applicationId->value);
-
-            $program = $this->programs->findForUpdate($application->programId())
-                ?? throw ProgramNotFound::withId($application->programId()->value);
-
-            $this->decisions->accept($application, $program, $this->clock->now());
-
-            $this->applications->save($application);
-            $this->programs->save($program);
-
-            $this->unitOfWork->collect($application, $program);
-        });
-    }
-}
-```
-
-`RejectApplicationHandler` و`WithdrawApplicationHandler` بنفس النمط: قفل، قرار، حفظ، جمع.
-
 ---
 
-## ١٢. البنية التحتية
+## ثالثاً: طبقة البنية التحتية — `Admissions/Infrastructure/`
+
+طبقة البنية التحتية (Infrastructure Layer) تقدّم التنفيذ الفعلي لمستودعات المجال ومنافذ التطبيق باستخدام Laravel وEloquent وقاعدة البيانات والبريد، وتربطها داخل حاوية الاعتماديات عبر `AdmissionsServiceProvider`.
+
+### ١. نماذج Eloquent للتخزين — `Admissions/Infrastructure/Persistence/Eloquent/`
+
+#### `ApplicationEloquentModel.php`
+
+- **المسار:** `Admissions/Infrastructure/Persistence/Eloquent/ApplicationEloquentModel.php`
+- **اسم الصفحة:** `ApplicationEloquentModel.php`
+- **الوظيفة:** نموذج Eloquent للتخزين فقط (Anemic Persistence Model) يمثل سجل جدول admission_applications في قاعدة البيانات، بلا قواعد عمل وبلا أحداث مجال.
 
 ```php
 <?php
 
 declare(strict_types=1);
 
-namespace Admissions\Infrastructure\Persistence;
+/**
+ * المسار: Admissions/Infrastructure/Persistence/Eloquent/ApplicationEloquentModel.php
+ * اسم الصفحة: ApplicationEloquentModel.php
+ * الوظيفة: نموذج Eloquent للتخزين فقط (Anemic Persistence Model) يمثل سجل جدول admission_applications في قاعدة البيانات، بلا قواعد عمل وبلا أحداث مجال.
+ */
+
+namespace Admissions\Infrastructure\Persistence\Eloquent;
 
 use Illuminate\Database\Eloquent\Model;
 
-/** سجل تخزين فقط: بلا قواعد عمل وبلا أحداث. */
-final class ApplicationRecord extends Model
+/**
+ * @property string $id
+ * @property string $student_id
+ * @property string $program_id
+ * @property string|float $gpa
+ * @property string $status
+ * @property string|null $decision_reason
+ * @property \Illuminate\Support\Carbon|string|null $submitted_at
+ * @property \Illuminate\Support\Carbon|string|null $decided_at
+ */
+final class ApplicationEloquentModel extends Model
 {
     protected $table = 'admission_applications';
 
@@ -897,68 +2118,147 @@ final class ApplicationRecord extends Model
     protected $keyType = 'string';
 
     protected $guarded = [];
+
+    protected function casts(): array
+    {
+        return [
+            'submitted_at' => 'immutable_datetime',
+            'decided_at' => 'immutable_datetime',
+        ];
+    }
 }
 ```
 
-`ProgramRecord` بنفس الشكل على جدول `programs`.
+#### `ProgramEloquentModel.php`
+
+- **المسار:** `Admissions/Infrastructure/Persistence/Eloquent/ProgramEloquentModel.php`
+- **اسم الصفحة:** `ProgramEloquentModel.php`
+- **الوظيفة:** نموذج Eloquent للتخزين فقط (Anemic Persistence Model) يمثل سجل جدول programs في قاعدة البيانات، ويُستخدم حصراً داخل المستودع.
 
 ```php
 <?php
 
 declare(strict_types=1);
 
-namespace Admissions\Infrastructure\Persistence;
+/**
+ * المسار: Admissions/Infrastructure/Persistence/Eloquent/ProgramEloquentModel.php
+ * اسم الصفحة: ProgramEloquentModel.php
+ * الوظيفة: نموذج Eloquent للتخزين فقط (Anemic Persistence Model) يمثل سجل جدول programs في قاعدة البيانات، ويُستخدم حصراً داخل المستودع.
+ */
 
-use Admissions\Domain\Model\AdmissionApplication;
-use Admissions\Domain\Model\ApplicationId;
-use Admissions\Domain\Model\ApplicationStatus;
-use Admissions\Domain\Model\Gpa;
-use Admissions\Domain\Model\ProgramId;
-use Admissions\Domain\Model\StudentId;
-use Admissions\Domain\Repository\AdmissionApplicationRepository;
+namespace Admissions\Infrastructure\Persistence\Eloquent;
+
+use Illuminate\Database\Eloquent\Model;
+
+/**
+ * @property string $id
+ * @property string $name
+ * @property string|float $min_gpa
+ * @property int $capacity
+ * @property int $reserved_seats
+ */
+final class ProgramEloquentModel extends Model
+{
+    protected $table = 'programs';
+
+    public $incrementing = false;
+
+    protected $keyType = 'string';
+
+    protected $guarded = [];
+
+    protected function casts(): array
+    {
+        return [
+            'capacity' => 'integer',
+            'reserved_seats' => 'integer',
+        ];
+    }
+}
+```
+
+### ٢. تنفيذ المستودعات — `Admissions/Infrastructure/Persistence/Repositories/`
+
+#### `EloquentAdmissionApplicationRepository.php`
+
+- **المسار:** `Admissions/Infrastructure/Persistence/Repositories/EloquentAdmissionApplicationRepository.php`
+- **اسم الصفحة:** `EloquentAdmissionApplicationRepository.php`
+- **الوظيفة:** التنفيذ الفعلي لمستودع طلبات القبول باستخدام Eloquent؛ يحوّل بين كيان المجال AdmissionApplication وسجل قاعدة البيانات ApplicationEloquentModel، ويترجم أخطاء قيود الفهرس الفريد إلى استثناء مجال.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Infrastructure/Persistence/Repositories/EloquentAdmissionApplicationRepository.php
+ * اسم الصفحة: EloquentAdmissionApplicationRepository.php
+ * الوظيفة: التنفيذ الفعلي لمستودع طلبات القبول باستخدام Eloquent؛ يحوّل بين كيان المجال AdmissionApplication وسجل قاعدة البيانات ApplicationEloquentModel، ويترجم أخطاء قيود الفهرس الفريد إلى استثناء مجال.
+ */
+
+namespace Admissions\Infrastructure\Persistence\Repositories;
+
+use Admissions\Domain\Entities\AdmissionApplication;
+use Admissions\Domain\Enums\ApplicationStatus;
+use Admissions\Domain\Exceptions\AlreadyAppliedException;
+use Admissions\Domain\Repositories\AdmissionApplicationRepositoryInterface;
+use Admissions\Domain\ValueObjects\ApplicationId;
+use Admissions\Domain\ValueObjects\Gpa;
+use Admissions\Domain\ValueObjects\ProgramId;
+use Admissions\Domain\ValueObjects\StudentId;
+use Admissions\Infrastructure\Persistence\Eloquent\ApplicationEloquentModel;
+use DateTimeImmutable;
+use DateTimeInterface;
 use Illuminate\Database\UniqueConstraintViolationException;
 
-final readonly class EloquentApplicationRepository implements AdmissionApplicationRepository
+final readonly class EloquentAdmissionApplicationRepository implements AdmissionApplicationRepositoryInterface
 {
     public function find(ApplicationId $id): ?AdmissionApplication
     {
-        return $this->map(ApplicationRecord::query()->find($id->value));
+        $record = ApplicationEloquentModel::query()->find($id->value());
+
+        return $this->toDomainEntity($record);
     }
 
     public function findForUpdate(ApplicationId $id): ?AdmissionApplication
     {
-        return $this->map(ApplicationRecord::query()->lockForUpdate()->find($id->value));
+        $record = ApplicationEloquentModel::query()
+            ->lockForUpdate()
+            ->find($id->value());
+
+        return $this->toDomainEntity($record);
     }
 
-    public function existsFor(StudentId $student, ProgramId $program): bool
+    public function existsForStudentAndProgram(StudentId $studentId, ProgramId $programId): bool
     {
-        return ApplicationRecord::query()
-            ->where('student_id', $student->value)
-            ->where('program_id', $program->value)
+        return ApplicationEloquentModel::query()
+            ->where('student_id', $studentId->value())
+            ->where('program_id', $programId->value())
             ->exists();
     }
 
     public function save(AdmissionApplication $application): void
     {
         $attributes = [
-            'id' => $application->id()->value,
-            'student_id' => $application->studentId()->value,
-            'program_id' => $application->programId()->value,
+            'id' => $application->id()->value(),
+            'student_id' => $application->studentId()->value(),
+            'program_id' => $application->programId()->value(),
             'gpa' => number_format($application->gpa()->value(), 2, '.', ''),
             'status' => $application->status()->value,
             'decision_reason' => $application->decisionReason(),
+            'submitted_at' => $application->submittedAt()?->format('Y-m-d H:i:s'),
+            'decided_at' => $application->decidedAt()?->format('Y-m-d H:i:s'),
         ];
 
-        $record = ApplicationRecord::query()->find($application->id()->value);
+        $record = ApplicationEloquentModel::query()->find($application->id()->value());
 
         if ($record === null) {
             try {
-                (new ApplicationRecord())->forceFill($attributes)->save();
+                (new ApplicationEloquentModel())->forceFill($attributes)->save();
             } catch (UniqueConstraintViolationException) {
-                // سباق بين الفحص والإدراج: القيد هو الحكم النهائي.
-                throw AlreadyApplied::for(
-                    $application->studentId()->value,
-                    $application->programId()->value,
+                throw AlreadyAppliedException::forStudentAndProgram(
+                    $application->studentId()->value(),
+                    $application->programId()->value(),
                 );
             }
 
@@ -968,257 +2268,930 @@ final readonly class EloquentApplicationRepository implements AdmissionApplicati
         $record->forceFill($attributes)->save();
     }
 
-    private function map(?ApplicationRecord $record): ?AdmissionApplication
+    public function deleteDraftsOlderThan(DateTimeImmutable $cutoff): int
+    {
+        return (int) ApplicationEloquentModel::query()
+            ->where('status', ApplicationStatus::Draft->value)
+            ->where('created_at', '<', $cutoff->format('Y-m-d H:i:s'))
+            ->delete();
+    }
+
+    private function toDomainEntity(?ApplicationEloquentModel $record): ?AdmissionApplication
     {
         if ($record === null) {
             return null;
         }
 
         return AdmissionApplication::reconstitute(
-            new ApplicationId($record->id),
-            new StudentId($record->student_id),
-            new ProgramId($record->program_id),
-            Gpa::fromDatabase($record->gpa),
-            ApplicationStatus::from($record->status),
-            $record->decision_reason,
+            id: ApplicationId::fromString((string) $record->id),
+            studentId: StudentId::fromString((string) $record->student_id),
+            programId: ProgramId::fromString((string) $record->program_id),
+            gpa: Gpa::fromDatabase($record->gpa),
+            status: ApplicationStatus::from((string) $record->status),
+            decisionReason: $record->decision_reason,
+            submittedAt: $this->toImmutableDateTime($record->submitted_at),
+            decidedAt: $this->toImmutableDateTime($record->decided_at),
+        );
+    }
+
+    private function toImmutableDateTime(mixed $value): ?DateTimeImmutable
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if ($value instanceof DateTimeImmutable) {
+            return $value;
+        }
+
+        if ($value instanceof DateTimeInterface) {
+            return DateTimeImmutable::createFromInterface($value);
+        }
+
+        return new DateTimeImmutable((string) $value);
+    }
+}
+```
+
+#### `EloquentProgramRepository.php`
+
+- **المسار:** `Admissions/Infrastructure/Persistence/Repositories/EloquentProgramRepository.php`
+- **اسم الصفحة:** `EloquentProgramRepository.php`
+- **الوظيفة:** التنفيذ الفعلي لمستودع البرامج الدراسية باستخدام Eloquent؛ يحوّل بين كيان المجال Program وسجل قاعدة البيانات ProgramEloquentModel مع دعم القفل التشاؤمي.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Infrastructure/Persistence/Repositories/EloquentProgramRepository.php
+ * اسم الصفحة: EloquentProgramRepository.php
+ * الوظيفة: التنفيذ الفعلي لمستودع البرامج الدراسية باستخدام Eloquent؛ يحوّل بين كيان المجال Program وسجل قاعدة البيانات ProgramEloquentModel مع دعم القفل التشاؤمي.
+ */
+
+namespace Admissions\Infrastructure\Persistence\Repositories;
+
+use Admissions\Domain\Entities\Program;
+use Admissions\Domain\Repositories\ProgramRepositoryInterface;
+use Admissions\Domain\ValueObjects\Gpa;
+use Admissions\Domain\ValueObjects\ProgramId;
+use Admissions\Infrastructure\Persistence\Eloquent\ProgramEloquentModel;
+
+final readonly class EloquentProgramRepository implements ProgramRepositoryInterface
+{
+    public function find(ProgramId $id): ?Program
+    {
+        $record = ProgramEloquentModel::query()->find($id->value());
+
+        return $this->toDomainEntity($record);
+    }
+
+    public function findForUpdate(ProgramId $id): ?Program
+    {
+        $record = ProgramEloquentModel::query()
+            ->lockForUpdate()
+            ->find($id->value());
+
+        return $this->toDomainEntity($record);
+    }
+
+    public function save(Program $program): void
+    {
+        ProgramEloquentModel::query()->updateOrCreate(
+            ['id' => $program->id()->value()],
+            [
+                'name' => $program->name(),
+                'min_gpa' => number_format($program->minimumGpa()->value(), 2, '.', ''),
+                'capacity' => $program->capacity(),
+                'reserved_seats' => $program->reservedSeats(),
+            ],
+        );
+    }
+
+    private function toDomainEntity(?ProgramEloquentModel $record): ?Program
+    {
+        if ($record === null) {
+            return null;
+        }
+
+        return Program::reconstitute(
+            id: ProgramId::fromString((string) $record->id),
+            name: (string) $record->name,
+            minimumGpa: Gpa::fromDatabase($record->min_gpa),
+            capacity: (int) $record->capacity,
+            reservedSeats: (int) $record->reserved_seats,
         );
     }
 }
 ```
 
-المابّرات هنا دوال خاصة؛ إن كبرت، استخرجها إلى `Mapper` مستقل.
+### ٣. الأحداث والمستمعون — `Admissions/Infrastructure/Events/`
+
+#### `LaravelDomainEventDispatcher.php`
+
+- **المسار:** `Admissions/Infrastructure/Events/LaravelDomainEventDispatcher.php`
+- **اسم الصفحة:** `LaravelDomainEventDispatcher.php`
+- **الوظيفة:** محوّل (Adapter) ينفّذ واجهة DomainEventDispatcherInterface باستخدام موزّع أحداث Laravel لنشر أحداث المجال بعد اعتماد المعاملة.
 
 ```php
 <?php
 
 declare(strict_types=1);
 
-namespace Admissions\Infrastructure\Provider;
+/**
+ * المسار: Admissions/Infrastructure/Events/LaravelDomainEventDispatcher.php
+ * اسم الصفحة: LaravelDomainEventDispatcher.php
+ * الوظيفة: محوّل (Adapter) ينفّذ واجهة DomainEventDispatcherInterface باستخدام موزّع أحداث Laravel لنشر أحداث المجال بعد اعتماد المعاملة.
+ */
 
-use Admissions\Application\Port\Clock;
-use Admissions\Application\Port\DomainEventDispatcher;
-use Admissions\Application\Port\IdentifierGenerator;
-use Admissions\Application\Port\TransactionManager;
-use Admissions\Application\UnitOfWork;
-use Admissions\Domain\Repository\AdmissionApplicationRepository;
-use Admissions\Domain\Repository\ProgramRepository;
-use Admissions\Domain\Service\AdmissionDecisionService;
-use Illuminate\Support\ServiceProvider;
+namespace Admissions\Infrastructure\Events;
 
-final class AdmissionsServiceProvider extends ServiceProvider
+use Admissions\Application\Interfaces\DomainEventDispatcherInterface;
+use Illuminate\Contracts\Events\Dispatcher;
+
+final readonly class LaravelDomainEventDispatcher implements DomainEventDispatcherInterface
 {
-    public function register(): void
+    public function __construct(
+        private Dispatcher $dispatcher,
+    ) {
+    }
+
+    public function dispatch(object $event): void
     {
-        $this->app->bind(Clock::class, \Admissions\Infrastructure\Laravel\SystemClock::class);
-        $this->app->bind(IdentifierGenerator::class, \Admissions\Infrastructure\Laravel\UlidGenerator::class);
-        $this->app->bind(TransactionManager::class, \Admissions\Infrastructure\Laravel\LaravelTransactionManager::class);
-        $this->app->bind(DomainEventDispatcher::class, \Admissions\Infrastructure\Laravel\LaravelEventDispatcher::class);
-
-        $this->app->bind(ProgramRepository::class, \Admissions\Infrastructure\Persistence\EloquentProgramRepository::class);
-        $this->app->bind(AdmissionApplicationRepository::class, \Admissions\Infrastructure\Persistence\EloquentApplicationRepository::class);
-
-        $this->app->singleton(AdmissionDecisionService::class);
-        $this->app->scoped(UnitOfWork::class);
+        $this->dispatcher->dispatch($event);
     }
 }
 ```
 
-```php
-// SystemClock
-public function now(): DateTimeImmutable { return new DateTimeImmutable('now'); }
+#### `SendAcceptanceNotificationListener.php`
 
-// UlidGenerator
-public function next(): string { return (string) Str::ulid(); }
-
-// LaravelTransactionManager
-public function transactional(callable $work): mixed
-{
-    return $this->database->connection()->transaction($work, attempts: 3);
-}
-
-// LaravelEventDispatcher
-public function dispatch(object $event): void { $this->events->dispatch($event); }
-```
-
----
-
-## ١٣. الإشعارات
+- **المسار:** `Admissions/Infrastructure/Events/SendAcceptanceNotificationListener.php`
+- **اسم الصفحة:** `SendAcceptanceNotificationListener.php`
+- **الوظيفة:** مستمع أحداث غير متزامن (Queued Listener) يلتقط حدث ApplicationAccepted عبر الطابور ويفوّض إرسال إشعار القبول إلى ApplicantNotifierInterface.
 
 ```php
 <?php
 
 declare(strict_types=1);
 
-namespace Notifications\Infrastructure\Listener;
+/**
+ * المسار: Admissions/Infrastructure/Events/SendAcceptanceNotificationListener.php
+ * اسم الصفحة: SendAcceptanceNotificationListener.php
+ * الوظيفة: مستمع أحداث غير متزامن (Queued Listener) يلتقط حدث ApplicationAccepted عبر الطابور ويفوّض إرسال إشعار القبول إلى ApplicantNotifierInterface.
+ */
 
-use Admissions\Domain\Model\Event\ApplicationAccepted;
+namespace Admissions\Infrastructure\Events;
+
+use Admissions\Application\Interfaces\ApplicantNotifierInterface;
+use Admissions\Domain\Events\ApplicationAccepted;
 use Illuminate\Contracts\Queue\ShouldQueue;
+
+final readonly class SendAcceptanceNotificationListener implements ShouldQueue
+{
+    public function __construct(
+        private ApplicantNotifierInterface $notifier,
+    ) {
+    }
+
+    public function handle(ApplicationAccepted $event): void
+    {
+        $this->notifier->sendAcceptanceNotification(
+            studentId: $event->studentId,
+            programId: $event->programId,
+            applicationId: $event->applicationId,
+        );
+    }
+}
+```
+
+### ٤. خدمات البنية التحتية — `Admissions/Infrastructure/Services/`
+
+#### `SystemClockService.php`
+
+- **المسار:** `Admissions/Infrastructure/Services/SystemClockService.php`
+- **اسم الصفحة:** `SystemClockService.php`
+- **الوظيفة:** محوّل (Adapter) ينفّذ واجهة ClockInterface بإرجاع الوقت الفعلي للنظام ككائن DateTimeImmutable.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Infrastructure/Services/SystemClockService.php
+ * اسم الصفحة: SystemClockService.php
+ * الوظيفة: محوّل (Adapter) ينفّذ واجهة ClockInterface بإرجاع الوقت الفعلي للنظام ككائن DateTimeImmutable.
+ */
+
+namespace Admissions\Infrastructure\Services;
+
+use Admissions\Application\Interfaces\ClockInterface;
+use DateTimeImmutable;
+
+final readonly class SystemClockService implements ClockInterface
+{
+    public function now(): DateTimeImmutable
+    {
+        return new DateTimeImmutable('now');
+    }
+}
+```
+
+#### `UlidGeneratorService.php`
+
+- **المسار:** `Admissions/Infrastructure/Services/UlidGeneratorService.php`
+- **اسم الصفحة:** `UlidGeneratorService.php`
+- **الوظيفة:** محوّل (Adapter) ينفّذ واجهة IdGeneratorInterface لتوليد معرّفات ULID مرتبة زمنياً باستخدام مساعد Laravel Str.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Infrastructure/Services/UlidGeneratorService.php
+ * اسم الصفحة: UlidGeneratorService.php
+ * الوظيفة: محوّل (Adapter) ينفّذ واجهة IdGeneratorInterface لتوليد معرّفات ULID مرتبة زمنياً باستخدام مساعد Laravel Str.
+ */
+
+namespace Admissions\Infrastructure\Services;
+
+use Admissions\Application\Interfaces\IdGeneratorInterface;
+use Illuminate\Support\Str;
+
+final readonly class UlidGeneratorService implements IdGeneratorInterface
+{
+    public function nextUlid(): string
+    {
+        return (string) Str::ulid();
+    }
+}
+```
+
+#### `LaravelTransactionManager.php`
+
+- **المسار:** `Admissions/Infrastructure/Services/LaravelTransactionManager.php`
+- **اسم الصفحة:** `LaravelTransactionManager.php`
+- **الوظيفة:** محوّل (Adapter) ينفّذ واجهة TransactionManagerInterface لإدارة معاملات قاعدة البيانات عبر DatabaseManager في Laravel مع دعم إعادة المحاولة عند التعارض.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Infrastructure/Services/LaravelTransactionManager.php
+ * اسم الصفحة: LaravelTransactionManager.php
+ * الوظيفة: محوّل (Adapter) ينفّذ واجهة TransactionManagerInterface لإدارة معاملات قاعدة البيانات عبر DatabaseManager في Laravel مع دعم إعادة المحاولة عند التعارض.
+ */
+
+namespace Admissions\Infrastructure\Services;
+
+use Admissions\Application\Interfaces\TransactionManagerInterface;
+use Illuminate\Database\DatabaseManager;
+
+final readonly class LaravelTransactionManager implements TransactionManagerInterface
+{
+    public function __construct(
+        private DatabaseManager $database,
+    ) {
+    }
+
+    public function transactional(callable $callback): mixed
+    {
+        return $this->database->connection()->transaction($callback, attempts: 3);
+    }
+}
+```
+
+#### `MailApplicantNotifierService.php`
+
+- **المسار:** `Admissions/Infrastructure/Services/MailApplicantNotifierService.php`
+- **اسم الصفحة:** `MailApplicantNotifierService.php`
+- **الوظيفة:** محوّل بنية تحتية ينفّذ واجهة ApplicantNotifierInterface لإرسال بريد القبول للطالب مع ضمان عدم التكرار (Idempotency) عبر جدول sent_notifications.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Infrastructure/Services/MailApplicantNotifierService.php
+ * اسم الصفحة: MailApplicantNotifierService.php
+ * الوظيفة: محوّل بنية تحتية ينفّذ واجهة ApplicantNotifierInterface لإرسال بريد القبول للطالب مع ضمان عدم التكرار (Idempotency) عبر جدول sent_notifications.
+ */
+
+namespace Admissions\Infrastructure\Services;
+
+use Admissions\Application\Interfaces\ApplicantNotifierInterface;
+use Admissions\Domain\ValueObjects\ApplicationId;
+use Admissions\Domain\ValueObjects\ProgramId;
+use Admissions\Domain\ValueObjects\StudentId;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 
-final readonly class OnApplicationAccepted implements ShouldQueue
+final readonly class MailApplicantNotifierService implements ApplicantNotifierInterface
 {
-    public function handle(ApplicationAccepted $event): void
-    {
-        $key = 'accepted:' . $event->applicationId->value;
+    public function sendAcceptanceNotification(
+        StudentId $studentId,
+        ProgramId $programId,
+        ApplicationId $applicationId,
+    ): void {
+        $idempotencyKey = 'acceptance_mail:' . $applicationId->value();
 
-        if (DB::table('sent_notifications')->where('notification_key', $key)->exists()) {
+        if (DB::table('sent_notifications')->where('notification_key', $idempotencyKey)->exists()) {
             return;
         }
 
-        $student = DB::table('users')->where('id', $event->studentId->value)->first();
-        $program = DB::table('programs')->where('id', $event->programId->value)->value('name');
+        $student = DB::table('users')->where('id', $studentId->value())->first();
+        $programName = DB::table('programs')->where('id', $programId->value())->value('name');
 
-        if ($student === null || $program === null) {
+        if ($student === null || $programName === null) {
             return;
         }
 
-        Mail::to($student->email)->send(new AcceptanceMail($student->name, (string) $program));
+        Mail::raw(
+            "تهانينا {$student->name}، تم قبول طلبك رقم ({$applicationId->value()}) في برنامج {$programName}.",
+            static function ($message) use ($student): void {
+                $message->to($student->email)->subject('إشعار القبول الجامعي');
+            },
+        );
 
         DB::table('sent_notifications')->insertOrIgnore([
-            'notification_key' => $key,
+            'notification_key' => $idempotencyKey,
             'sent_at' => now(),
         ]);
     }
 }
 ```
 
+### ٥. مزوّدات الخدمة — `Admissions/Infrastructure/Providers/`
+
+#### `AdmissionsServiceProvider.php`
+
+- **المسار:** `Admissions/Infrastructure/Providers/AdmissionsServiceProvider.php`
+- **اسم الصفحة:** `AdmissionsServiceProvider.php`
+- **الوظيفة:** مزوّد خدمة Laravel (Service Provider) يربط واجهات المجال والتطبيق بتنفيذاتها في البنية التحتية داخل حاوية الاعتماديات (DI Container)، ويسجّل مستمعات الأحداث وأوامر الـ Console.
+
 ```php
-// NotificationsServiceProvider::boot()
-public function boot(Dispatcher $events): void
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Infrastructure/Providers/AdmissionsServiceProvider.php
+ * اسم الصفحة: AdmissionsServiceProvider.php
+ * الوظيفة: مزوّد خدمة Laravel (Service Provider) يربط واجهات المجال والتطبيق بتنفيذاتها في البنية التحتية داخل حاوية الاعتماديات (DI Container)، ويسجّل مستمعات الأحداث وأوامر الـ Console.
+ */
+
+namespace Admissions\Infrastructure\Providers;
+
+use Admissions\Application\Interfaces\ApplicantNotifierInterface;
+use Admissions\Application\Interfaces\ClockInterface;
+use Admissions\Application\Interfaces\DomainEventDispatcherInterface;
+use Admissions\Application\Interfaces\IdGeneratorInterface;
+use Admissions\Application\Interfaces\TransactionManagerInterface;
+use Admissions\Application\Services\UnitOfWorkService;
+use Admissions\Domain\Events\ApplicationAccepted;
+use Admissions\Domain\Repositories\AdmissionApplicationRepositoryInterface;
+use Admissions\Domain\Repositories\ProgramRepositoryInterface;
+use Admissions\Domain\Services\AdmissionDecisionDomainService;
+use Admissions\Infrastructure\Events\LaravelDomainEventDispatcher;
+use Admissions\Infrastructure\Events\SendAcceptanceNotificationListener;
+use Admissions\Infrastructure\Persistence\Repositories\EloquentAdmissionApplicationRepository;
+use Admissions\Infrastructure\Persistence\Repositories\EloquentProgramRepository;
+use Admissions\Infrastructure\Services\LaravelTransactionManager;
+use Admissions\Infrastructure\Services\MailApplicantNotifierService;
+use Admissions\Infrastructure\Services\SystemClockService;
+use Admissions\Infrastructure\Services\UlidGeneratorService;
+use Admissions\Presentation\Console\ExpireDraftApplicationsCommand;
+use Illuminate\Contracts\Events\Dispatcher;
+use Illuminate\Support\ServiceProvider;
+
+final class AdmissionsServiceProvider extends ServiceProvider
 {
-    // تسجيل صريح: الاكتشاف التلقائي لا يعمل خارج app/ ويفشل بصمت.
-    $events->listen(ApplicationAccepted::class, OnApplicationAccepted::class);
+    public function register(): void
+    {
+        // ربط مستودعات المجال بتنفيذات Eloquent
+        $this->app->bind(
+            AdmissionApplicationRepositoryInterface::class,
+            EloquentAdmissionApplicationRepository::class,
+        );
+
+        $this->app->bind(
+            ProgramRepositoryInterface::class,
+            EloquentProgramRepository::class,
+        );
+
+        // ربط منافذ التطبيق (Application Interfaces) بخدمات البنية التحتية
+        $this->app->bind(ClockInterface::class, SystemClockService::class);
+        $this->app->bind(IdGeneratorInterface::class, UlidGeneratorService::class);
+        $this->app->bind(TransactionManagerInterface::class, LaravelTransactionManager::class);
+        $this->app->bind(DomainEventDispatcherInterface::class, LaravelDomainEventDispatcher::class);
+        $this->app->bind(ApplicantNotifierInterface::class, MailApplicantNotifierService::class);
+
+        // تسجيل خدمات المجال والتطبيق
+        $this->app->singleton(AdmissionDecisionDomainService::class);
+        $this->app->scoped(UnitOfWorkService::class);
+    }
+
+    public function boot(Dispatcher $events): void
+    {
+        // تسجيل صريح لمستمع الحدث لأن المجلد خارج app/Listeners
+        $events->listen(
+            ApplicationAccepted::class,
+            SendAcceptanceNotificationListener::class,
+        );
+
+        if ($this->app->runningInConsole()) {
+            $this->commands([
+                ExpireDraftApplicationsCommand::class,
+            ]);
+        }
+    }
 }
 ```
 
-`AcceptanceMail` هو `Mailable` عادي (مُنشئ + `envelope()` + `content()`). الحدث يحمل معرّفات فقط، فيُسلسل بحجم صغير ولا يعتمد على Eloquent.
-
 ---
 
-## ١٤. طبقة العرض
+## رابعاً: طبقة العرض — `Admissions/Presentation/`
+
+طبقة العرض (Presentation Layer) تستقبل طلبات HTTP وأوامر الطرفية (Console)، تتحقق من المدخلات، تفوّض التنفيذ إلى طبقة التطبيق، وتُخرج الاستجابة عبر موارد JSON موحّدة.
+
+### ١. المتحكمات — `Admissions/Presentation/Http/Controllers/`
+
+#### `AdmissionApplicationController.php`
+
+- **المسار:** `Admissions/Presentation/Http/Controllers/AdmissionApplicationController.php`
+- **اسم الصفحة:** `AdmissionApplicationController.php`
+- **الوظيفة:** متحكم HTTP (Controller) نحيف يستقبل طلبات الويب (عرض، تقديم، قبول، رفض، انسحاب)، يفوّض التنفيذ إلى حالات الاستخدام في طبقة التطبيق، ويعيد الاستجابة عبر AdmissionApplicationResource.
 
 ```php
 <?php
 
 declare(strict_types=1);
 
-namespace Admissions\Presentation\Http;
+/**
+ * المسار: Admissions/Presentation/Http/Controllers/AdmissionApplicationController.php
+ * اسم الصفحة: AdmissionApplicationController.php
+ * الوظيفة: متحكم HTTP (Controller) نحيف يستقبل طلبات الويب (عرض، تقديم، قبول، رفض، انسحاب)، يفوّض التنفيذ إلى حالات الاستخدام في طبقة التطبيق، ويعيد الاستجابة عبر AdmissionApplicationResource.
+ */
 
-use Admissions\Presentation\Http\Controller\ApplicationController;
-use Illuminate\Support\Facades\Route;
+namespace Admissions\Presentation\Http\Controllers;
 
-Route::prefix('v1')->middleware('auth:sanctum')->group(function (): void {
-    Route::post('/applications', [ApplicationController::class, 'store'])
-        ->middleware('throttle:10,1');
+use Admissions\Application\Services\ApplicationQueryService;
+use Admissions\Application\UseCases\AcceptApplicationUseCase;
+use Admissions\Application\UseCases\RejectApplicationUseCase;
+use Admissions\Application\UseCases\SubmitApplicationUseCase;
+use Admissions\Application\UseCases\WithdrawApplicationUseCase;
+use Admissions\Presentation\Http\Requests\RejectApplicationRequest;
+use Admissions\Presentation\Http\Requests\SubmitApplicationRequest;
+use Admissions\Presentation\Http\Resources\AdmissionApplicationResource;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Gate;
+use Symfony\Component\HttpFoundation\Response;
 
-    Route::post('/applications/{id}/accept', [ApplicationController::class, 'accept'])
-        ->middleware('can:admissions.decide');
+final readonly class AdmissionApplicationController
+{
+    public function show(
+        string $id,
+        ApplicationQueryService $queryService,
+    ): AdmissionApplicationResource {
+        $dto = $queryService->getById($id);
 
-    Route::post('/applications/{id}/reject', [ApplicationController::class, 'reject'])
-        ->middleware('can:admissions.decide');
+        return new AdmissionApplicationResource($dto);
+    }
 
-    Route::post('/applications/{id}/withdraw', [ApplicationController::class, 'withdraw']);
-});
+    public function store(
+        SubmitApplicationRequest $request,
+        SubmitApplicationUseCase $useCase,
+    ): JsonResponse {
+        $dto = $useCase->execute($request->toDTO());
+
+        return (new AdmissionApplicationResource($dto))
+            ->response()
+            ->setStatusCode(Response::HTTP_CREATED);
+    }
+
+    public function accept(
+        string $id,
+        AcceptApplicationUseCase $useCase,
+    ): AdmissionApplicationResource {
+        Gate::authorize('admissions.decide');
+
+        $dto = $useCase->execute($id);
+
+        return new AdmissionApplicationResource($dto);
+    }
+
+    public function reject(
+        string $id,
+        RejectApplicationRequest $request,
+        RejectApplicationUseCase $useCase,
+    ): AdmissionApplicationResource {
+        $dto = $useCase->execute($request->toDTO($id));
+
+        return new AdmissionApplicationResource($dto);
+    }
+
+    public function withdraw(
+        string $id,
+        WithdrawApplicationUseCase $useCase,
+    ): AdmissionApplicationResource {
+        $dto = $useCase->execute($id);
+
+        return new AdmissionApplicationResource($dto);
+    }
+}
 ```
 
+### ٢. طلبات التحقق — `Admissions/Presentation/Http/Requests/`
+
+#### `SubmitApplicationRequest.php`
+
+- **المسار:** `Admissions/Presentation/Http/Requests/SubmitApplicationRequest.php`
+- **اسم الصفحة:** `SubmitApplicationRequest.php`
+- **الوظيفة:** طلب تحقق HTTP (FormRequest) يفحص شكل وصيغة مدخلات تقديم الطلب (program_id و gpa) ويحوّلها إلى كائن SubmitApplicationDTO.
+
 ```php
 <?php
 
 declare(strict_types=1);
 
-namespace Admissions\Presentation\Http\Controller;
+/**
+ * المسار: Admissions/Presentation/Http/Requests/SubmitApplicationRequest.php
+ * اسم الصفحة: SubmitApplicationRequest.php
+ * الوظيفة: طلب تحقق HTTP (FormRequest) يفحص شكل وصيغة مدخلات تقديم الطلب (program_id و gpa) ويحوّلها إلى كائن SubmitApplicationDTO.
+ */
 
-use Admissions\Application\UseCase\AcceptApplicationHandler;
-use Admissions\Application\UseCase\SubmitApplicationHandler;
-use Admissions\Domain\Model\ApplicationId;
-use Admissions\Domain\Model\ProgramId;
-use Admissions\Domain\Model\StudentId;
+namespace Admissions\Presentation\Http\Requests;
+
+use Admissions\Application\DTOs\SubmitApplicationDTO;
+use Illuminate\Foundation\Http\FormRequest;
+
+final class SubmitApplicationRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        return $this->user() !== null;
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    public function rules(): array
+    {
+        return [
+            'program_id' => ['required', 'string', 'size:26'],
+            'gpa' => ['required', 'numeric', 'between:0,5'],
+        ];
+    }
+
+    public function toDTO(): SubmitApplicationDTO
+    {
+        return new SubmitApplicationDTO(
+            studentId: (string) $this->user()->getAuthIdentifier(),
+            programId: (string) $this->string('program_id'),
+            gpa: $this->float('gpa'),
+        );
+    }
+}
+```
+
+#### `RejectApplicationRequest.php`
+
+- **المسار:** `Admissions/Presentation/Http/Requests/RejectApplicationRequest.php`
+- **اسم الصفحة:** `RejectApplicationRequest.php`
+- **الوظيفة:** طلب تحقق HTTP (FormRequest) يتحقق من صلاحية موظف القبول ووجود سبب الرفض نصياً، ويحوّل البيانات إلى كائن RejectApplicationDTO.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Presentation/Http/Requests/RejectApplicationRequest.php
+ * اسم الصفحة: RejectApplicationRequest.php
+ * الوظيفة: طلب تحقق HTTP (FormRequest) يتحقق من صلاحية موظف القبول ووجود سبب الرفض نصياً، ويحوّل البيانات إلى كائن RejectApplicationDTO.
+ */
+
+namespace Admissions\Presentation\Http\Requests;
+
+use Admissions\Application\DTOs\RejectApplicationDTO;
+use Illuminate\Foundation\Http\FormRequest;
+
+final class RejectApplicationRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        return $this->user()?->can('admissions.decide') ?? false;
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    public function rules(): array
+    {
+        return [
+            'reason' => ['required', 'string', 'min:3', 'max:500'],
+        ];
+    }
+
+    public function toDTO(string $applicationId): RejectApplicationDTO
+    {
+        return new RejectApplicationDTO(
+            applicationId: $applicationId,
+            reason: (string) $this->string('reason'),
+        );
+    }
+}
+```
+
+### ٣. موارد الاستجابة — `Admissions/Presentation/Http/Resources/`
+
+#### `AdmissionApplicationResource.php`
+
+- **المسار:** `Admissions/Presentation/Http/Resources/AdmissionApplicationResource.php`
+- **اسم الصفحة:** `AdmissionApplicationResource.php`
+- **الوظيفة:** مورد عرض (API JsonResource) يحوّل كائن القراءة ApplicationReadDTO إلى استجابة JSON موحّدة لواجهة البرمجة (API).
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Presentation/Http/Resources/AdmissionApplicationResource.php
+ * اسم الصفحة: AdmissionApplicationResource.php
+ * الوظيفة: مورد عرض (API JsonResource) يحوّل كائن القراءة ApplicationReadDTO إلى استجابة JSON موحّدة لواجهة البرمجة (API).
+ */
+
+namespace Admissions\Presentation\Http\Resources;
+
+use Admissions\Application\DTOs\ApplicationReadDTO;
+use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\JsonResource;
+
+/**
+ * @property-read ApplicationReadDTO $resource
+ */
+final class AdmissionApplicationResource extends JsonResource
+{
+    /**
+     * @return array<string, mixed>
+     */
+    public function toArray(Request $request): array
+    {
+        return [
+            'id' => $this->resource->id,
+            'student_id' => $this->resource->studentId,
+            'program_id' => $this->resource->programId,
+            'gpa' => $this->resource->gpa,
+            'status' => [
+                'code' => $this->resource->status,
+                'label' => $this->resource->statusLabel,
+            ],
+            'decision_reason' => $this->resource->decisionReason,
+            'submitted_at' => $this->resource->submittedAt,
+            'decided_at' => $this->resource->decidedAt,
+        ];
+    }
+}
+```
+
+### ٤. الوسطاء — `Admissions/Presentation/Http/Middleware/`
+
+#### `EnsureAdmissionsWindowOpenMiddleware.php`
+
+- **المسار:** `Admissions/Presentation/Http/Middleware/EnsureAdmissionsWindowOpenMiddleware.php`
+- **اسم الصفحة:** `EnsureAdmissionsWindowOpenMiddleware.php`
+- **الوظيفة:** وسيط HTTP (Middleware) يتحقق من أن فترة التقديم الجامعي مفتوحة حالياً قبل السماح بإنشاء أو تقديم طلبات قبول جديدة.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Presentation/Http/Middleware/EnsureAdmissionsWindowOpenMiddleware.php
+ * اسم الصفحة: EnsureAdmissionsWindowOpenMiddleware.php
+ * الوظيفة: وسيط HTTP (Middleware) يتحقق من أن فترة التقديم الجامعي مفتوحة حالياً قبل السماح بإنشاء أو تقديم طلبات قبول جديدة.
+ */
+
+namespace Admissions\Presentation\Http\Middleware;
+
+use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
-final readonly class ApplicationController
+final class EnsureAdmissionsWindowOpenMiddleware
 {
-    public function store(Request $request, SubmitApplicationHandler $handler): Response
+    /**
+     * @param  Closure(Request):Response  $next
+     */
+    public function handle(Request $request, Closure $next): Response
     {
-        $request->validate([
-            'program_id' => ['required', 'string', 'size:26'],
-            'gpa' => ['required', 'numeric', 'between:0,5'],
-        ]);
+        $isWindowOpen = (bool) config('admissions.window_open', true);
 
-        $id = $handler(
-            new StudentId((string) $request->user()->getAuthIdentifier()),
-            new ProgramId((string) $request->string('program_id')),
-            $request->float('gpa'),
-        );
+        if (! $isWindowOpen) {
+            return response()->json([
+                'error' => [
+                    'code' => 'admissions_window_closed',
+                    'message' => 'فترة التقديم الجامعي مغلقة حالياً.',
+                ],
+            ], Response::HTTP_FORBIDDEN);
+        }
 
-        return response()->json(['id' => $id], Response::HTTP_CREATED);
-    }
-
-    public function accept(string $id, AcceptApplicationHandler $handler): Response
-    {
-        $handler(new ApplicationId($id));
-
-        return response()->json(['status' => 'accepted']);
+        return $next($request);
     }
 }
 ```
 
-في مشروع حقيقي: `FormRequest` و`Resource` بدل التحقق والاستجابة المباشرين، و`Gate::authorize` في كل مسار إداري.
+#### `RenderAdmissionsExceptionMiddleware.php`
+
+- **المسار:** `Admissions/Presentation/Http/Middleware/RenderAdmissionsExceptionMiddleware.php`
+- **اسم الصفحة:** `RenderAdmissionsExceptionMiddleware.php`
+- **الوظيفة:** وسيط HTTP (Middleware) يلتقط استثناءات المجال الحاملة لكود خطأ (HasErrorCode) ويترجمها إلى رموز حالة HTTP مناسبة (404، 409، 422) دون تلويث المجال بتفاصيل البروتوكول.
 
 ```php
 <?php
 
 declare(strict_types=1);
 
-namespace Admissions\Presentation\Http;
+/**
+ * المسار: Admissions/Presentation/Http/Middleware/RenderAdmissionsExceptionMiddleware.php
+ * اسم الصفحة: RenderAdmissionsExceptionMiddleware.php
+ * الوظيفة: وسيط HTTP (Middleware) يلتقط استثناءات المجال الحاملة لكود خطأ (HasErrorCode) ويترجمها إلى رموز حالة HTTP مناسبة (404، 409، 422) دون تلويث المجال بتفاصيل البروتوكول.
+ */
 
-/** جدول واحد: كود الخطأ → رمز HTTP. المجال لا يعرف HTTP. */
-final class ExceptionMap
+namespace Admissions\Presentation\Http\Middleware;
+
+use Admissions\Domain\Exceptions\HasErrorCode;
+use Closure;
+use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
+
+final class RenderAdmissionsExceptionMiddleware
 {
-    private const MAP = [
-        'invalid_gpa' => 422,
-        'gpa_below_minimum' => 422,
-        'rejection_reason_required' => 422,
-        'invalid_transition' => 409,
-        'no_seats_available' => 409,
-        'already_applied' => 409,
-        'application_not_found' => 404,
-        'program_not_found' => 404,
+    /** @var array<string, int> */
+    private const STATUS_MAP = [
+        'invalid_gpa' => Response::HTTP_UNPROCESSABLE_ENTITY,
+        'gpa_below_minimum' => Response::HTTP_UNPROCESSABLE_ENTITY,
+        'rejection_reason_required' => Response::HTTP_UNPROCESSABLE_ENTITY,
+        'invalid_transition' => Response::HTTP_CONFLICT,
+        'no_seats_available' => Response::HTTP_CONFLICT,
+        'already_applied' => Response::HTTP_CONFLICT,
+        'application_not_found' => Response::HTTP_NOT_FOUND,
+        'program_not_found' => Response::HTTP_NOT_FOUND,
     ];
 
-    public static function status(string $code): int
+    /**
+     * @param  Closure(Request):Response  $next
+     */
+    public function handle(Request $request, Closure $next): Response
     {
-        return self::MAP[$code] ?? 500;
+        try {
+            return $next($request);
+        } catch (HasErrorCode $exception) {
+            $status = self::STATUS_MAP[$exception->errorCode()] ?? Response::HTTP_INTERNAL_SERVER_ERROR;
+
+            return response()->json([
+                'error' => [
+                    'code' => $exception->errorCode(),
+                    'message' => $exception->getMessage(),
+                ],
+            ], $status);
+        }
     }
 }
 ```
 
-```php
-// bootstrap/app.php
-->withExceptions(function (Exceptions $exceptions): void {
-    $exceptions->render(function (\Admissions\Domain\Exception\HasErrorCode $e, $request) {
-        $status = \Admissions\Presentation\Http\ExceptionMap::status($e->errorCode());
+### ٥. أوامر الطرفية — `Admissions/Presentation/Console/`
 
-        return $request->expectsJson()
-            ? response()->json(['error' => ['code' => $e->errorCode(), 'message' => $e->getMessage()]], $status)
-            : back()->withErrors(['domain' => $e->getMessage()]);
-    });
-})
+#### `ExpireDraftApplicationsCommand.php`
+
+- **المسار:** `Admissions/Presentation/Console/ExpireDraftApplicationsCommand.php`
+- **اسم الصفحة:** `ExpireDraftApplicationsCommand.php`
+- **الوظيفة:** أمر طرفية (Artisan Console Command) يستدعي حالة الاستخدام ExpireDraftApplicationsUseCase لحذف مسودات طلبات القبول المتروكة منذ أكثر من عدد محدد من الأيام.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: Admissions/Presentation/Console/ExpireDraftApplicationsCommand.php
+ * اسم الصفحة: ExpireDraftApplicationsCommand.php
+ * الوظيفة: أمر طرفية (Artisan Console Command) يستدعي حالة الاستخدام ExpireDraftApplicationsUseCase لحذف مسودات طلبات القبول المتروكة منذ أكثر من عدد محدد من الأيام.
+ */
+
+namespace Admissions\Presentation\Console;
+
+use Admissions\Application\UseCases\ExpireDraftApplicationsUseCase;
+use Illuminate\Console\Command;
+
+final class ExpireDraftApplicationsCommand extends Command
+{
+    protected $signature = 'admissions:expire-drafts {--days=30 : عدد الأيام قبل اعتبار المسودة منتهية}';
+
+    protected $description = 'حذف مسودات طلبات القبول الجامعي المتروكة التي تجاوزت المهلة المحددة';
+
+    public function handle(ExpireDraftApplicationsUseCase $useCase): int
+    {
+        $days = max(1, (int) $this->option('days'));
+
+        $deletedCount = $useCase->execute($days);
+
+        $this->info("تم حذف [{$deletedCount}] مسودة طلب قبول مضى عليها أكثر من {$days} يوماً.");
+
+        return self::SUCCESS;
+    }
+}
 ```
 
 ---
 
-## ١٥. الترحيل
+## خامساً: ربط الموديول بالمشروع (`composer.json` والمسارات والترحيل)
+
+#### `composer.json`
+
+- **المسار:** `composer.json`
+- **اسم الصفحة:** `composer.json`
+- **الوظيفة:** تسجيل مساحة الأسماء `Admissions\` لترتبط بمجلد `Admissions/` عبر معيار التحميل التلقائي `PSR-4`.
+
+```json
+{
+    "autoload": {
+        "psr-4": {
+            "App\\": "app/",
+            "Admissions\\": "Admissions/"
+        }
+    }
+}
+```
+
+#### `routes/api.php`
+
+- **المسار:** `routes/api.php`
+- **اسم الصفحة:** `api.php`
+- **الوظيفة:** تعريف مسارات واجهة برمجة التطبيقات (API Routes) الخاصة بموديول القبول الجامعي وربطها بوسطاء التحقق ومعالجة استثناءات المجال ومتحكم الطلبات.
 
 ```php
 <?php
 
 declare(strict_types=1);
 
+/**
+ * المسار: routes/api.php
+ * اسم الصفحة: api.php
+ * الوظيفة: تعريف مسارات API لموديول القبول الجامعي وربطها بالـ Middleware والـ Controller.
+ */
+
+use Admissions\Presentation\Http\Controllers\AdmissionApplicationController;
+use Admissions\Presentation\Http\Middleware\EnsureAdmissionsWindowOpenMiddleware;
+use Admissions\Presentation\Http\Middleware\RenderAdmissionsExceptionMiddleware;
+use Illuminate\Support\Facades\Route;
+
+Route::prefix('v1/admissions')
+    ->middleware([
+        'auth:sanctum',
+        RenderAdmissionsExceptionMiddleware::class,
+    ])
+    ->group(function (): void {
+        Route::get('/applications/{id}', [AdmissionApplicationController::class, 'show']);
+
+        Route::post('/applications', [AdmissionApplicationController::class, 'store'])
+            ->middleware([
+                EnsureAdmissionsWindowOpenMiddleware::class,
+                'throttle:10,1',
+            ]);
+
+        Route::post('/applications/{id}/accept', [AdmissionApplicationController::class, 'accept']);
+        Route::post('/applications/{id}/reject', [AdmissionApplicationController::class, 'reject']);
+        Route::post('/applications/{id}/withdraw', [AdmissionApplicationController::class, 'withdraw']);
+    });
+```
+
+#### `2026_10_23_000001_create_admissions_tables.php`
+
+- **المسار:** `database/migrations/2026_10_23_000001_create_admissions_tables.php`
+- **اسم الصفحة:** `2026_10_23_000001_create_admissions_tables.php`
+- **الوظيفة:** ملف ترحيل قاعدة البيانات (Migration) لإنشاء جداول `programs` و`admission_applications` و`sent_notifications` مع قيود التكامل والفهرس الفريد لمنع ازدواجية التقديم.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * المسار: database/migrations/2026_10_23_000001_create_admissions_tables.php
+ * اسم الصفحة: 2026_10_23_000001_create_admissions_tables.php
+ * الوظيفة: إنشاء جداول البرامج وطلبات القبول وسجل الإشعارات المرسلة مع قيود قاعدة البيانات.
+ */
+
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
@@ -1236,14 +3209,15 @@ return new class extends Migration
 
         Schema::create('admission_applications', function (Blueprint $table): void {
             $table->char('id', 26)->primary();
-            $table->unsignedBigInteger('student_id');
+            $table->string('student_id', 64);
             $table->char('program_id', 26);
             $table->decimal('gpa', 4, 2);
             $table->string('status', 20)->default('draft');
             $table->string('decision_reason', 500)->nullable();
+            $table->timestamp('submitted_at')->nullable();
+            $table->timestamp('decided_at')->nullable();
             $table->timestamps();
 
-            $table->foreign('student_id')->references('id')->on('users');
             $table->foreign('program_id')->references('id')->on('programs');
             $table->unique(['student_id', 'program_id']);
             $table->index(['program_id', 'status']);
@@ -1253,11 +3227,6 @@ return new class extends Migration
             $table->string('notification_key', 120)->primary();
             $table->timestamp('sent_at');
         });
-
-        if (in_array(DB::getDriverName(), ['mysql', 'pgsql'], true)) {
-            DB::statement('ALTER TABLE programs ADD CONSTRAINT chk_capacity CHECK (reserved_seats <= capacity)');
-            DB::statement("ALTER TABLE admission_applications ADD CONSTRAINT chk_status CHECK (status IN ('draft','submitted','accepted','rejected','withdrawn'))");
-        }
     }
 
     public function down(): void
@@ -1268,181 +3237,3 @@ return new class extends Migration
     }
 };
 ```
-
----
-
-## ١٦. الاختبارات
-
-```php
-<?php
-
-declare(strict_types=1);
-
-use Admissions\Domain\Exception\InvalidGpa;
-use Admissions\Domain\Model\Gpa;
-
-it('accepts only values within the scale', function (float $value, bool $valid): void {
-    $check = fn () => Gpa::fromFloat($value);
-
-    $valid
-        ? expect($check()->value())->toBe($value)
-        : expect($check)->toThrow(InvalidGpa::class);
-})->with([
-    [0.0, true],
-    [4.25, true],
-    [5.0, true],
-    [-0.01, false],
-    [5.01, false],
-    [NAN, false],
-]);
-```
-
-```php
-<?php
-
-declare(strict_types=1);
-
-use Admissions\Domain\Exception\NoSeatsAvailable;
-use Admissions\Domain\Model\AdmissionApplication;
-use Admissions\Domain\Model\ApplicationId;
-use Admissions\Domain\Model\ApplicationStatus;
-use Admissions\Domain\Model\Gpa;
-use Admissions\Domain\Model\Program;
-use Admissions\Domain\Model\ProgramId;
-use Admissions\Domain\Model\StudentId;
-use Admissions\Domain\Service\AdmissionDecisionService;
-use Illuminate\Support\Str;
-
-/**
- * مساعد للاختبار: طلب مُقدَّم مربوط ببرنامج معيّن.
- */
-function submittedApplicationFor(Program $program): AdmissionApplication
-{
-    $application = AdmissionApplication::draft(
-        new ApplicationId((string) Str::ulid()),
-        new StudentId('1001'),
-        $program->id(),
-        Gpa::fromFloat(4.5),
-    );
-
-    $application->submit($program->minimumGpa(), new DateTimeImmutable());
-
-    return $application;
-}
-
-it('reserves a seat on acceptance', function (): void {
-    $program = Program::open(new ProgramId((string) Str::ulid()), 'CS', Gpa::fromFloat(4.0), 2);
-    $application = submittedApplicationFor($program);
-
-    (new AdmissionDecisionService())->accept($application, $program, new DateTimeImmutable());
-
-    expect($application->status())->toBe(ApplicationStatus::Accepted)
-        ->and($program->reservedSeats())->toBe(1);
-});
-
-it('does not touch the application when the program is full', function (): void {
-    $program = Program::open(new ProgramId((string) Str::ulid()), 'CS', Gpa::fromFloat(4.0), 1);
-
-    $first = submittedApplicationFor($program);
-    $second = submittedApplicationFor($program);
-
-    $service = new AdmissionDecisionService();
-    $service->accept($first, $program, new DateTimeImmutable());
-
-    expect(fn () => $service->accept($second, $program, new DateTimeImmutable()))
-        ->toThrow(NoSeatsAvailable::class);
-
-    expect($second->status())->toBe(ApplicationStatus::Submitted)
-        ->and($program->reservedSeats())->toBe(1);
-});
-
-it('releases the seat when an accepted student withdraws', function (): void {
-    $program = Program::open(new ProgramId((string) Str::ulid()), 'CS', Gpa::fromFloat(4.0), 1);
-    $application = submittedApplicationFor($program);
-
-    $service = new AdmissionDecisionService();
-    $service->accept($application, $program, new DateTimeImmutable());
-    $service->withdraw($application, $program);
-
-    expect($application->status())->toBe(ApplicationStatus::Withdrawn)
-        ->and($program->reservedSeats())->toBe(0);
-});
-```
-
-```php
-<?php
-
-declare(strict_types=1);
-
-use Illuminate\Foundation\Testing\RefreshDatabase;
-
-uses(RefreshDatabase::class);
-
-it('returns 409 when seats run out', function (): void {
-    // ... تجهيز برنامج بسعة 1 وطلبان مُقدَّمان
-    $this->actingAs($officer)
-        ->postJson("/api/v1/applications/{$first->id()->value}/accept")
-        ->assertOk();
-
-    $this->actingAs($officer)
-        ->postJson("/api/v1/applications/{$second->id()->value}/accept")
-        ->assertStatus(409)
-        ->assertJsonPath('error.code', 'no_seats_available');
-});
-
-it('returns 403 when a student tries to accept', function (): void {
-    $this->actingAs($student)
-        ->postJson('/api/v1/applications/01J0000000000000000000000/accept')
-        ->assertForbidden();
-});
-```
-
-```php
-// اختبار عمارة: يمنع الانحراف تدريجياً
-arch('domain is framework-free')
-    ->expect('Admissions\Domain')
-    ->not->toUse(['Illuminate', 'App', 'Admissions\Infrastructure', 'Admissions\Presentation']);
-```
-
----
-
-## ١٧. ما تغيّر عن المثال الأصلي
-
-| الأصلي | هنا | السبب |
-|---|---|---|
-| موديلات Eloquent داخل المجال | كيانات PHP + سجلات في البنية التحتية | اختبار بلا قاعدة بيانات |
-| `accept()` بلا تحقق من المقعد | `AdmissionDecisionService` + `reserveSeat()` | الثابت يعبر تجمّعين |
-| `seats` يتناقص | `capacity` + `reserved_seats` | تحرير المقعد ومنع التجاوز |
-| `dispatch()` من الكيان | تسجيل ثم نشر بعد الـ commit | لا إشعار كاذب |
-| اكتشاف Listeners تلقائياً | `Event::listen` صريح | لا فشل صامت |
-| لا صلاحيات | `can:admissions.decide` + Gate | أمان فعلي |
-| `DomainException → 422` للكل | خريطة 404/409/422/500 | دلالة صحيحة |
-| `$guarded = []` + JSON مباشر | `forceFill` من المابّر فقط | لا تعبئة جماعية |
-
----
-
-## ١٨. متى لا تستخدم هذه الهيكلية
-
-- CRUD بسيط بلا قواعد متشابكة: عبء بلا مقابل.
-- نموذج أولي تريد التحقق منه بسرعة.
-- فريق صغير ومجال لا يتغيّر.
-- عندما تبدأ: طبّقها على **Core Domain** فقط، واترك الباقي Eloquent + Actions.
-
-الثمن الحقيقي: ملفات أكثر، مابّرات صريحة، ومنحنى تعلّم. المقابل: قواعد قابلة للاختبار في أجزاء من الثانية، وتغيير محدود الأثر.
-
----
-
-## ١٩. التشغيل
-
-```bash
-composer dump-autoload
-php artisan migrate
-php artisan queue:work --tries=5
-php artisan test
-```
-
----
-
-## ما لم يُغطَّ هنا
-
-Outbox للأحداث، مفاتيح Idempotency على HTTP، سجل تدقيق، نموذج قراءة بفصل كامل. كلها إضافات تُبنى فوق هذه الحدود لا بداخلها.
