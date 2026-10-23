@@ -3237,3 +3237,272 @@ return new class extends Migration
     }
 };
 ```
+
+
+---
+
+## سادساً: شرح تفصيلي — كيف تنتقل البيانات؟ ورحلة الطلب من الصفر حتى النهاية
+
+حتى لا يكون الكود مجرد ملفات متفرقة، هذا القسم يشرح **كيف تتحرك البيانات من طبقة إلى طبقة**، و**لماذا يتغير شكل البيانات عند كل حدود**، ثم يتتبع **رحلة طلب حقيقية من الصفر** خطوة بخطوة.
+
+---
+
+### ١. لماذا يتغيّر شكل البيانات أثناء رحلتها؟ (خريطة تحوّل البيانات)
+
+في هذه المعمارية، البيانات لا تدخل كـ `Request` إلى قلب النظام ولا تخرج كـ `Eloquent Model` إلى المتصفح، بل تتحول عبر **٦ أشكال محددة**، لكل شكل وظيفة تحمي طبقة معيّنة:
+
+```text
+[1] JSON HTTP Request (بيانات خام من المتصفح/الجوال)
+       │
+       ▼  (Presentation/Http/Requests/SubmitApplicationRequest.php)
+[2] SubmitApplicationDTO (بيانات نظيفة بأنواع PHP بسيطة: string, float)
+       │
+       ▼  (Application/UseCases/SubmitApplicationUseCase.php)
+[3] Value Objects: StudentId, ProgramId, Gpa (قيم محمية بقواعد المجال)
+       │
+       ▼  (Domain/Entities/AdmissionApplication.php + Program.php)
+[4] Domain Entity / Aggregate Root (الكيان الذكي الذي يملك القرار والأحداث)
+       │
+       ▼  (Infrastructure/Persistence/Repositories/EloquentAdmissionApplicationRepository.php)
+[5] ApplicationEloquentModel (سجل تخزين خام يكتب في جدول قاعدة البيانات)
+       │
+       ▼  (بعد الحفظ والعودة عبر UseCase)
+[6] ApplicationReadDTO ──► AdmissionApplicationResource ──► JSON Response
+```
+
+#### لماذا لا نختصر هذه التحويلات؟
+1. **لماذا لا نمرر `$request` إلى الـ `UseCase`؟**
+   لأن الـ `UseCase` قد يُستدعى من **HTTP Controller** أو من **أمر Console (`Artisan`)** أو من **Job في الطابور** أو من **اختبار آلي (Test)**. لو اعتمد على `Request`، لن يعمل إلا عبر الويب. لذلك نحوله إلى `DTO`.
+2. **لماذا لا نمرر `float $gpa` مباشرة إلى الكيان بدلاً من `Gpa` Value Object؟**
+   لأن `float` يقبل `-5` و`99` و`NAN`. أما كائن `Gpa` فمجرد وجوده في الذاكرة يعني أنه **حتماً رقم صحيح بين `0.0` و`5.0`**.
+3. **لماذا نفصل `AdmissionApplication` (الكيان) عن `ApplicationEloquentModel` (نموذج Eloquent)؟**
+   لأن `Eloquent Model` مربوط بقاعدة البيانات ويسمح لأي كود بتعديل أي عمود مباشرة (`$model->status = 'accepted'`). أما الكيان `AdmissionApplication` فخصائصه `private`، ولا يمكن تغيير حالته إلا عبر دوال تحمي القواعد مثل `submit()` و`accept()` و`reject()`.
+4. **لماذا نرجع `ApplicationReadDTO` للـ Controller بدلاً من الكيان نفسه؟**
+   لمنع طبقة العرض (`Controller` أو `Resource`) من استدعاء دوال تغيّر حالة الكيان بالخطأ أثناء تجهيز الـ JSON.
+
+---
+
+### ٢. الرحلة الأولى من الصفر: طالب يقدّم طلب قبول جديد (`Submit Application`)
+
+تخيّل طالباً رقمه `"1001"` فتح تطبيق الجامعة وأرسل طلب تقديم على برنامج «علوم الحاسب» بمعدل `4.50`:
+
+```http
+POST /api/v1/admissions/applications
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+    "program_id": "01J8Z9K2M3N4P5Q6R7S8T9V0W1",
+    "gpa": 4.5
+}
+```
+
+إليك ما يحدث بالترتيب الزمني الدقيق داخل كل ملف في الخارطة:
+
+---
+
+#### المحطة ١: حراس البوابة (`Presentation/Http/Middleware/`)
+قبل أن يصل الطلب إلى الـ Controller، يمر عبر وسيطين (Middlewares):
+
+1. **`RenderAdmissionsExceptionMiddleware.php`**:
+   يفتح كتلة `try { return $next($request); } catch (HasErrorCode $e) { ... }` ليراقب الطريق كله؛ إذا رمى المجال أي استثناء لاحقاً، سيمسكه هنا ويحوله إلى JSON نظيف.
+2. **`EnsureAdmissionsWindowOpenMiddleware.php`**:
+   يسأل: هل باب القبول الجامعي مفتوح حالياً في الإعدادات (`config('admissions.window_open')`)؟
+   - إذا كان مغلقاً: يوقف الطلب فوراً ويرجع `403 Forbidden` دون إزعاج طبقة التطبيق أو قاعدة البيانات.
+   - إذا كان مفتوحاً: يسمح للطلب بالمرور.
+
+---
+
+#### المحطة ٢: فحص الشكل وتجهيز ظرف البيانات (`Presentation/Http/Requests/SubmitApplicationRequest.php`)
+Laravel ينشئ كائناً من `SubmitApplicationRequest` تلقائياً قبل دخول دالة `store()` في الـ Controller:
+1. ينفذ `authorize()`: يتأكد أن الطالب مسجّل دخول (`$this->user() !== null`).
+2. ينفذ `rules()`: يتحقق من **شكل** البيانات فقط (هل `program_id` نص طوله 26 حرفاً؟ هل `gpa` رقم بين 0 و 5؟).
+   > **انتبه:** هذا فحص شكلي أولي لمدخلات HTTP، وليس قاعدة العمل الخاصة بالحد الأدنى للبرنامج.
+3. عندما ينجح الفحص، يستدعي الـ Controller دالة `$request->toDTO()` التي تصنع كائناً من **`SubmitApplicationDTO`** (`Application/DTOs/SubmitApplicationDTO.php`) يحتوي على ثلاث قيم نظيفة:
+   - `studentId = "1001"`
+   - `programId = "01J8Z9K2M3N4P5Q6R7S8T9V0W1"`
+   - `gpa = 4.5`
+
+---
+
+#### المحطة ٣: الشرطي النحيف (`Presentation/Http/Controllers/AdmissionApplicationController.php`)
+الـ Controller في دالة `store()` لا يكتب أي `if` ولا يتحدث مع قاعدة البيانات؛ كل ما يفعله سطران:
+```php
+$dto = $useCase->execute($request->toDTO());
+
+return (new AdmissionApplicationResource($dto))
+    ->response()
+    ->setStatusCode(Response::HTTP_CREATED);
+```
+يسلّم الـ `SubmitApplicationDTO` إلى قائد العملية: **`SubmitApplicationUseCase`**.
+
+---
+
+#### المحطة ٤: تحويل البيانات الخام إلى كائنات قيمة (`Application/UseCases/SubmitApplicationUseCase.php`)
+أول ما يفعله `SubmitApplicationUseCase::execute()` قبل فتح أي معاملة قاعدة بيانات هو تحويل نصوص وأرقام الـ DTO إلى **Value Objects** من طبقة المجال (`Domain/ValueObjects/`):
+1. `StudentId::fromString($dto->studentId)` ◄── يتأكد أن معرّف الطالب ليس نصاً فارغاً.
+2. `ProgramId::fromString($dto->programId)` ◄── يتأكد أن معرّف البرنامج يطابق صيغة ULID.
+3. `Gpa::fromFloat($dto->gpa)` ◄── يتأكد أن المعدل رقم منتهٍ (`is_finite`) بين `0.0` و`5.0` ويقرّبه لمنزلتين عشريتين. لو كان خطأ لرمى `InvalidGpaException` فوراً قبل لمس قاعدة البيانات!
+
+---
+
+#### المحطة ٥: فتح وحدة العمل والمعاملة (`Application/Services/UnitOfWorkService.php`)
+الـ `UseCase` يستدعي `$this->unitOfWork->execute(function () { ... })`.
+ماذا يفعل `UnitOfWorkService`؟
+- يطلب من `TransactionManagerInterface` (والذي ينفّذه `LaravelTransactionManager.php` في البنية التحتية) فتح **`DB::transaction()`**.
+- أي شيء يحدث داخل هذه الدالة إما أن ينجح كله معاً (`COMMIT`) أو يُلغى كله معاً (`ROLLBACK`).
+
+---
+
+#### المحطة ٦: استرجاع البرنامج وفحص عدم التكرار عبر المستودعات (`Domain/Repositories/` ◄── `Infrastructure/Persistence/Repositories/`)
+داخل المعاملة، يقوم `SubmitApplicationUseCase` بخطوتين عبر واجهات المستودعات:
+
+1. **البحث عن البرنامج:**
+   ينادي `$this->programRepository->find($programId)`.
+   - الذي ينفذ هذا النداء فعلياً هو **`EloquentProgramRepository.php`** في طبقة `Infrastructure`.
+   - يقرأ الصف من جدول `programs` عبر **`ProgramEloquentModel.php`**، ثم يحوّله بواسطة `Program::reconstitute(...)` إلى كيان مجال نقي **`Program`** (`Domain/Entities/Program.php`).
+   - إذا رجع `null`، يرمي الـ `UseCase` استثناء `ProgramNotFoundException` (الذي يتحول إلى `404 Not Found`).
+
+2. **فحص هل قدّم الطالب على هذا البرنامج من قبل:**
+   ينادي `$this->applicationRepository->existsForStudentAndProgram($studentId, $programId)`.
+   - إذا كان الطالب قد قدّم مسبقاً، يرمي `AlreadyAppliedException` (يتحول إلى `409 Conflict`).
+
+---
+
+#### المحطة ٧: لحظة الحقيقة داخل الكيان (`Domain/Entities/AdmissionApplication.php`)
+الآن يصنع الـ `UseCase` طلب قبول جديداً في حالة مسودة (`Draft`)، ثم يأمره بالتقديم:
+```php
+$application = AdmissionApplication::draft(
+    id: ApplicationId::fromString($this->idGenerator->nextUlid()),
+    studentId: $studentId,
+    programId: $programId,
+    gpa: $gpa,
+);
+
+$application->submit($program->minimumGpa(), $this->clock->now());
+```
+انظر ماذا يحدث داخل `$application->submit($minimumGpa, $at)` في طبقة المجال:
+1. **فحص آلة الحالة (`ApplicationStatus` Enum):**
+   يسأل `ApplicationStatus::Draft->canTransitionTo(ApplicationStatus::Submitted)` ◄── النتيجة `true`.
+2. **فحص قاعدة المعدل الأدنى (`Gpa::meets`):**
+   يسأل `$this->gpa->meets($minimumGpa)`: هل معدل الطالب (`4.5`) أكبر من أو يساوي الحد الأدنى للبرنامج (مثلاً `4.0`)؟
+   - لو كان معدل الطالب `3.2`، سيرمي الكيان بنفسه **`GpaBelowMinimumException`**!
+3. **تغيير الحالة وتسجيل الحدث:**
+   - يغيّر حالته الداخلية إلى `ApplicationStatus::Submitted`.
+   - يحفظ وقت التقديم `$this->submittedAt = $at`.
+   - يضع حدثاً جديداً **`new ApplicationSubmitted(...)`** داخل مصفوفته الخاصة `$this->domainEvents[]`.
+   > **ملاحظة جوهرية:** الكيان **لم يرسل** الحدث إلى Laravel بعد! هو فقط سجّله في ذاكرته الداخلية لأن المعاملة لم تُعتمد (`Commit`) بعد.
+
+---
+
+#### المحطة ٨: الحفظ الفعلي في قاعدة البيانات (`Infrastructure/Persistence/Repositories/EloquentAdmissionApplicationRepository.php`)
+ينادي الـ `UseCase`:
+```php
+$this->applicationRepository->save($application);
+$this->unitOfWork->collectEventsFrom($application);
+```
+- يأخذ `EloquentAdmissionApplicationRepository::save()` القيم من كيان `AdmissionApplication` ويفرغها في `ApplicationEloquentModel` وينفذ `INSERT` في جدول `admission_applications`.
+- حتى لو حدث سباق متزامن (طالب ضغط زر الإرسال مرتين في نفس الجزء من الثانية)، فإن قيد الفهرس الفريد في قاعدة البيانات `UNIQUE(student_id, program_id)` سيرمي `UniqueConstraintViolationException`، فيلتقطه المستودع ويترجمه إلى `AlreadyAppliedException`!
+- ثم يسحب `UnitOfWorkService::collectEventsFrom($application)` حدث `ApplicationSubmitted` من الكيان ويحتفظ به مؤقتاً.
+
+---
+
+#### المحطة ٩: اعتماد المعاملة ونشر الأحداث والرد على الطالب
+1. تنتهي دالة المعاملة بنجاح، فيقوم `LaravelTransactionManager` بعمل **`COMMIT`** في قاعدة البيانات.
+2. **فقط بعد نجاح الـ Commit**، يدور `UnitOfWorkService` على الأحداث المجمّعة وينشرها عبر `LaravelDomainEventDispatcher`.
+3. يُنشئ الـ `UseCase` كائن قراءة **`ApplicationReadDTO::fromEntity($application)`** ويرجعه للـ Controller.
+4. يغلّف الـ Controller هذا الـ DTO داخل **`AdmissionApplicationResource`** (`Presentation/Http/Resources/AdmissionApplicationResource.php`) الذي يخرج JSON النهائي بحالة `201 Created`:
+
+```json
+{
+    "data": {
+        "id": "01J8Z9M0A1B2C3D4E5F6G7H8J9",
+        "student_id": "1001",
+        "program_id": "01J8Z9K2M3N4P5Q6R7S8T9V0W1",
+        "gpa": 4.5,
+        "status": {
+            "code": "submitted",
+            "label": "مُقدَّم"
+        },
+        "decision_reason": null,
+        "submitted_at": "2026-10-23T09:30:00+00:00",
+        "decided_at": null
+    }
+}
+```
+
+---
+
+### ٣. الرحلة الثانية: موظف القبول يقبل الطلب (`Accept Application`) — كيف تتعاون الطبقات لحماية المقاعد؟
+
+الآن جاء موظف القبول وضغط زر «قبول الطلب»:
+```http
+POST /api/v1/admissions/applications/01J8Z9M0A1B2C3D4E5F6G7H8J9/accept
+```
+هنا توجد **قاعدة عمل حرجة تعبر كيانين معاً (`AdmissionApplication` + `Program`)**:
+> «لا يجوز قبول طلب إلا إذا كان في حالة `Submitted`، وكان في البرنامج الدراسي مقعد شاغر على الأقل، وعند القبول ينقص عدد المقاعد المتاحة بمقدار ١، ويُرسل إيميل للطالب».
+
+شاهد كيف تتعاون الملفات خطوة بخطوة:
+
+1. **فحص الصلاحية في الـ Controller (`AdmissionApplicationController::accept`):**
+   ينفذ `Gate::authorize('admissions.decide')`. لو كان المتصل طالباً عادياً وليس موظف قبول، يرد Laravel فوراً بـ `403 Forbidden`.
+2. **بدء المعاملة والقفل التشاؤمي (`AcceptApplicationUseCase.php`):**
+   يدخل `UnitOfWorkService::execute()` ويفتح Transaction، ثم يستدعي:
+   - `$application = $this->applicationRepository->findForUpdate($id)` ◄── ينفذ `SELECT ... FOR UPDATE` لقفل صف الطلب.
+   - `$program = $this->programRepository->findForUpdate($application->programId())` ◄── ينفذ `SELECT ... FOR UPDATE` لقفل صف البرنامج.
+   > **لماذا القفل وبنفس الترتيب؟** لو حاول موظفان قبول آخر طالبين في نفس اللحظة ولم يتبقَّ إلا مقعد واحد، سيقف الموظف الثاني عند `findForUpdate` منتظراً انتهاء معاملة الموظف الأول، فلا يمكن أبداً حجز مقعدين فوق السعة!
+3. **تنسيق القرار في خدمة المجال (`Domain/Services/AdmissionDecisionDomainService.php`):**
+   لماذا لم نضع حجز المقعد داخل `AdmissionApplication`؟ لأن `AdmissionApplication` تجمّع (Aggregate) مستقل عن `Program`. لذلك يستدعي الـ `UseCase` خدمة المجال `AdmissionDecisionDomainService::accept($application, $program, $now)`:
+   - تتأكد أولاً أن الطلب يخص هذا البرنامج فعلاً.
+   - تسأل الطلب `$application->assertCanBeAccepted()`: هل حالتك الحالية تسمح بالقبول؟ (لو كان `Draft` أو `Rejected` يفشل فوراً قبل لمس البرنامج).
+   - تأمر البرنامج بحجز مقعد `$program->reserveSeat()`: البرنامج يفحص `availableSeats() >= 1`؛ فإذا كانت المقاعد ممتلئة يرمي `NoSeatsAvailableException`، وإلا يزيد `reservedSeats` بمقدار `1`.
+   - تأمر الطلب بالقبول `$application->accept($at)`: يغير حالته إلى `Accepted` ويسجل حدث **`ApplicationAccepted`** داخلياً.
+4. **حفظ التجمّعين معاً:**
+   يحفظ الـ `UseCase` كلاً من `$application` و`$program` في قاعدة البيانات، ويجمع الأحداث في `UnitOfWorkService`.
+5. **الـ Commit ثم إرسال الإيميل عبر الطابور (`Infrastructure/Events/` + `Infrastructure/Services/`):**
+   - بمجرد نجاح الـ Commit في قاعدة البيانات، ينشر `UnitOfWorkService` حدث `ApplicationAccepted`.
+   - يلتقطه المستمع **`SendAcceptanceNotificationListener.php`** (المسجّل في `AdmissionsServiceProvider` والذي يطبق `ShouldQueue` ليعمل في الخلفية).
+   - يستدعي المستمع خدمة **`MailApplicantNotifierService.php`** التي تفحص جدول `sent_notifications` أولاً (لمنع إرسال الإيميل مرتين لو أُعيد تشغيل الـ Job)، ثم ترسل البريد للطالب وتسجل المفتاح `acceptance_mail:{id}`.
+
+---
+
+### ٤. ماذا يحدث لو فشل شرط في منتصف الطريق؟ (رحلة الخطأ)
+
+لنفترض أن البرنامج سعته `50` مقعداً والمقاعد المحجوزة `50` (أي المتاح `0`)، وحاول الموظف قبول الطلب رقم 51:
+
+1. يفتح `AcceptApplicationUseCase` المعاملة ويقفل الطلب والبرنامج.
+2. ينادي `AdmissionDecisionDomainService::accept()`.
+3. ينادي `$program->reserveSeat()` فيجد `availableSeats() < 1`.
+4. يرمي `Program` استثناء **`NoSeatsAvailableException::forProgram('علوم الحاسب')`** الذي يحمل الكود `'no_seats_available'`.
+5. يخرج الاستثناء من الدالة الممررة لـ `UnitOfWorkService`:
+   - يقوم `LaravelTransactionManager` بعمل **`ROLLBACK`** تلقائياً لقاعدة البيانات وتُحرَّر الأقفال.
+   - يفرّغ `UnitOfWorkService` مصفوفة الأحداث `$this->collectedEvents = []`، فلا يُنشر أي حدث ولا يُرسل أي إيميل كاذب.
+6. يصعد الاستثناء حتى يصل إلى **`RenderAdmissionsExceptionMiddleware.php`** في طبقة العرض:
+   - يقرأ `$exception->errorCode()` فيجده `'no_seats_available'`.
+   - ينظر في جدول `STATUS_MAP` فيجد أنه يقابل `409 Conflict`.
+   - يرجع استجابة JSON منظمة:
+   ```json
+   {
+       "error": {
+           "code": "no_seats_available",
+           "message": "No seats available in program [علوم الحاسب]."
+       }
+   }
+   ```
+
+---
+
+### ٥. جدول ملخص: من يتكلم مع من؟ (المرجع السريع)
+
+| الخطوة | من المتحدث؟ | مع من يتحدث؟ | ماذا يمرر له؟ | ماذا يستلم منه؟ |
+|---|---|---|---|---|
+| ١ | المتصفح / الجوال | `Middleware` ثم `FormRequest` | JSON خام عبر HTTP | فحص نافذة القبول + فحص شكل الحقول |
+| ٢ | `AdmissionApplicationController` | `SubmitApplicationRequest` | يطلب `$request->toDTO()` | كائن `SubmitApplicationDTO` |
+| ٣ | `AdmissionApplicationController` | `SubmitApplicationUseCase` | يمرر `SubmitApplicationDTO` | يستلم `ApplicationReadDTO` |
+| ٤ | `SubmitApplicationUseCase` | `ValueObjects` (`Gpa`, `ProgramId`, ...) | قيم أولية (`string`, `float`) | كائنات قيمة محمية |
+| ٥ | `SubmitApplicationUseCase` | `UnitOfWorkService` | دالة العمل (`Closure`) | تنفيذ داخل Transaction + نشر الأحداث بعد الـ Commit |
+| ٦ | `SubmitApplicationUseCase` | `ProgramRepositoryInterface` | `ProgramId` | كيان `Program` (أو `null`) |
+| ٧ | `SubmitApplicationUseCase` | كيان `AdmissionApplication` | `submit(minimumGpa, now)` | تغيير الحالة إلى `Submitted` + تسجيل حدث `ApplicationSubmitted` |
+| ٨ | `SubmitApplicationUseCase` | `AdmissionApplicationRepositoryInterface` | كيان `AdmissionApplication` | حفظ في قاعدة البيانات عبر `ApplicationEloquentModel` |
+| ٩ | `UnitOfWorkService` | `DomainEventDispatcherInterface` | أحداث المجال (`ApplicationAccepted`, ...) | إشعار المستمعين (`SendAcceptanceNotificationListener`) |
+| ١٠ | `AdmissionApplicationController` | `AdmissionApplicationResource` | `ApplicationReadDTO` | JSON النهائي للمستخدم |
